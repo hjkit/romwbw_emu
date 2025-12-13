@@ -454,128 +454,177 @@ void HBIOSDispatch::handleDIO() {
 
     case HBF_DIORESET:
       // Reset - nothing to do
+      disks[unit].current_lba = 0;
       break;
 
+    case HBF_DIOSEEK: {
+      // Seek to LBA
+      // Input: BC=Function/Unit, DE:HL=LBA (32-bit: DE=high16, HL=low16)
+      // Bit 31 (0x80 in high byte of DE) = LBA mode flag, mask it off
+      uint16_t de_reg = cpu->regs.DE.get_pair16();
+      uint16_t hl_reg = cpu->regs.HL.get_pair16();
+      uint32_t lba = (((uint32_t)(de_reg & 0x7FFF) << 16) | hl_reg);
+
+      if (unit < 16 && disks[unit].is_open) {
+        disks[unit].current_lba = lba;
+        if (debug) {
+          emu_log("[HBIOS DIO SEEK] unit=%d lba=%u\n", unit, lba);
+        }
+      } else {
+        result = HBR_FAILED;
+      }
+      break;
+    }
+
     case HBF_DIOREAD: {
-      // Read sectors
-      // D = sector count
-      // E = starting LBA bits 24-31 (usually 0)
-      // HL = buffer address
-      // BC (after call setup) has been modified, we need LBA from stack or DE
-      // Actually in RomWBW: HL=buffer, BCDE=LBA (32-bit), D(upper)=count
-      //
-      // Simplified: Use unit from C, D=count, HL=buffer, E=LBA low (for small disks)
-      // For EMU_HBIOS the LBA is in the 4 bytes before the call at the dispatch address
-      // Actually, let's check the actual calling convention...
-      //
-      // Looking at romwbw_web.cc - it uses:
-      // unit from C, buffer from HL, lba from memory at special location
-      // Let's use a simpler approach: count in D, LBA in E (for <256 sectors)
+      // Read sectors using current_lba (set by DIOSEEK)
+      // Input: BC=Function/Unit, HL=Buffer Address, D=Buffer Bank (0x80=use current), E=Block Count
+      // Output: A=Result, E=Blocks Read
+      // LBA comes from current_lba set by prior DIOSEEK call
 
       if (unit >= 16 || !disks[unit].is_open) {
         result = HBR_FAILED;
+        cpu->regs.DE.set_low(0);
         break;
       }
 
-      // Get parameters - this matches the EMU HBIOS calling convention
       uint16_t buffer = cpu->regs.HL.get_pair16();
-      uint8_t count = cpu->regs.DE.get_high();
-      uint32_t lba = cpu->regs.DE.get_low();  // Simplified: only low 8 bits of LBA
-
-      // For larger LBAs, check if there's an extended parameter area
-      // For now, assume small disk accesses
-
-      size_t offset = lba * 512;
-      size_t bytes = count * 512;
+      uint8_t buffer_bank = cpu->regs.DE.get_high();
+      uint8_t count = cpu->regs.DE.get_low();
+      uint32_t lba = disks[unit].current_lba;
 
       if (debug) {
-        emu_log("[HBIOS DIO READ] unit=%d lba=%u count=%d buf=0x%04X\n",
-                unit, (unsigned)lba, count, buffer);
+        emu_log("[HBIOS DIO READ] unit=%d lba=%u count=%d buf=0x%04X bank=0x%02X\n",
+                unit, lba, count, buffer, buffer_bank);
       }
+
+      uint8_t blocks_read = 0;
 
       if (disks[unit].file_backed && disks[unit].handle) {
         // Read from file
         uint8_t sector_buf[512];
         for (int s = 0; s < count; s++) {
+          size_t offset = (lba + s) * 512;
           size_t read = emu_disk_read((emu_disk_handle)disks[unit].handle,
-                                      offset + s * 512, sector_buf, 512);
+                                      offset, sector_buf, 512);
           if (read == 0) {
-            result = HBR_FAILED;
             break;
           }
           // Copy to Z80 memory
           for (size_t i = 0; i < 512; i++) {
             memory->store_mem(buffer + s * 512 + i, sector_buf[i]);
           }
+          blocks_read++;
         }
       } else if (!disks[unit].data.empty()) {
         // Read from memory buffer
-        for (size_t i = 0; i < bytes && (offset + i) < disks[unit].data.size(); i++) {
-          memory->store_mem(buffer + i, disks[unit].data[offset + i]);
+        for (int s = 0; s < count; s++) {
+          size_t offset = (lba + s) * 512;
+          if (offset + 512 > disks[unit].data.size()) {
+            break;
+          }
+          for (size_t i = 0; i < 512; i++) {
+            memory->store_mem(buffer + s * 512 + i, disks[unit].data[offset + i]);
+          }
+          blocks_read++;
         }
       } else {
         result = HBR_FAILED;
       }
 
-      cpu->regs.DE.set_low(count);  // Return sectors read
+      // Update current_lba for next sequential access
+      disks[unit].current_lba += blocks_read;
+      cpu->regs.DE.set_low(blocks_read);
       break;
     }
 
     case HBF_DIOWRITE: {
-      // Write sectors - similar to read
+      // Write sectors using current_lba (set by DIOSEEK)
+      // Input: BC=Function/Unit, HL=Buffer Address, D=Buffer Bank (0x80=use current), E=Block Count
+      // Output: A=Result, E=Blocks Written
+      // LBA comes from current_lba set by prior DIOSEEK call
+
       if (unit >= 16 || !disks[unit].is_open) {
         result = HBR_FAILED;
+        cpu->regs.DE.set_low(0);
         break;
       }
 
       uint16_t buffer = cpu->regs.HL.get_pair16();
-      uint8_t count = cpu->regs.DE.get_high();
-      uint32_t lba = cpu->regs.DE.get_low();
-
-      size_t offset = lba * 512;
+      uint8_t buffer_bank = cpu->regs.DE.get_high();
+      uint8_t count = cpu->regs.DE.get_low();
+      uint32_t lba = disks[unit].current_lba;
 
       if (debug) {
-        emu_log("[HBIOS DIO WRITE] unit=%d lba=%u count=%d buf=0x%04X\n",
-                unit, (unsigned)lba, count, buffer);
+        emu_log("[HBIOS DIO WRITE] unit=%d lba=%u count=%d buf=0x%04X bank=0x%02X\n",
+                unit, lba, count, buffer, buffer_bank);
       }
+
+      uint8_t blocks_written = 0;
 
       if (disks[unit].file_backed && disks[unit].handle) {
         uint8_t sector_buf[512];
         for (int s = 0; s < count; s++) {
+          size_t offset = (lba + s) * 512;
           for (size_t i = 0; i < 512; i++) {
             sector_buf[i] = memory->fetch_mem(buffer + s * 512 + i);
           }
-          emu_disk_write((emu_disk_handle)disks[unit].handle,
-                         offset + s * 512, sector_buf, 512);
+          emu_disk_write((emu_disk_handle)disks[unit].handle, offset, sector_buf, 512);
+          blocks_written++;
         }
         emu_disk_flush((emu_disk_handle)disks[unit].handle);
       } else if (!disks[unit].data.empty()) {
         for (int s = 0; s < count; s++) {
-          size_t sect_offset = offset + s * 512;
-          if (sect_offset + 512 > disks[unit].data.size()) {
-            disks[unit].data.resize(sect_offset + 512);
+          size_t offset = (lba + s) * 512;
+          if (offset + 512 > disks[unit].data.size()) {
+            disks[unit].data.resize(offset + 512);
           }
           for (size_t i = 0; i < 512; i++) {
-            disks[unit].data[sect_offset + i] = memory->fetch_mem(buffer + s * 512 + i);
+            disks[unit].data[offset + i] = memory->fetch_mem(buffer + s * 512 + i);
           }
+          blocks_written++;
         }
       } else {
         result = HBR_FAILED;
       }
 
-      cpu->regs.DE.set_low(count);
+      // Update current_lba for next sequential access
+      disks[unit].current_lba += blocks_written;
+      cpu->regs.DE.set_low(blocks_written);
       break;
     }
 
-    case HBF_DIOSENSE: {
-      // Sense media - return media type
+    case HBF_DIOFORMAT:
+      // Format track - not supported in emulator
+      result = HBR_NOTIMPL;
+      break;
+
+    case HBF_DIODEVICE: {
+      // Disk device info report
+      // Returns device type and attributes
       if (unit < 16 && disks[unit].is_open) {
-        cpu->regs.DE.set_low(0x01);  // Hard disk
+        cpu->regs.DE.set_high(0x03);  // DIODEV_IDE (hard disk type)
+        cpu->regs.DE.set_low(0x00);   // Subtype
       } else {
         result = HBR_FAILED;
       }
       break;
     }
+
+    case HBF_DIOMEDIA: {
+      // Disk media report - return media type
+      if (unit < 16 && disks[unit].is_open) {
+        cpu->regs.DE.set_low(MID_HD);  // Hard disk media
+      } else {
+        result = HBR_FAILED;
+      }
+      break;
+    }
+
+    case HBF_DIODEFMED:
+      // Define disk media - not supported in emulator
+      result = HBR_NOTIMPL;
+      break;
 
     case HBF_DIOCAP: {
       // Get capacity
@@ -598,12 +647,6 @@ void HBIOSDispatch::handleDIO() {
       cpu->regs.DE.set_low(255);  // 255 tracks
       break;
     }
-
-    case HBF_DIOINIT:
-    case HBF_DIOQUERY:
-    case HBF_DIODEVICE:
-      // Not critical for emulation
-      break;
 
     default:
       if (debug) {
@@ -863,15 +906,15 @@ void HBIOSDispatch::handleVDA() {
   uint8_t result = HBR_SUCCESS;
 
   switch (func) {
-    case HBF_VDAINIT:
-    case HBF_VDARESET:
+    case HBF_VDAINI:
+    case HBF_VDARES:
       vda_cursor_row = 0;
       vda_cursor_col = 0;
       vda_attr = 0x07;
       emu_video_clear();
       break;
 
-    case HBF_VDAQUERY: {
+    case HBF_VDAQRY: {
       // Query - return rows/cols
       cpu->regs.DE.set_high(vda_cols);
       cpu->regs.DE.set_low(vda_rows);
@@ -1010,7 +1053,7 @@ void HBIOSDispatch::handleSND() {
       }
       break;
 
-    case HBF_SNDPER:
+    case HBF_SNDPRD:
       if (channel < 4) {
         snd_period[channel] = cpu->regs.DE.get_pair16();
       }

@@ -14,6 +14,7 @@
 
 #include "qkz80.h"
 #include "romwbw_mem.h"
+#include "hbios_dispatch.h"  // Shared HBIOS definitions
 #include "emu_io.h"
 #include <cstdint>
 #include <cstdio>
@@ -127,73 +128,10 @@ static void deliver_nmi(qkz80& cpu) {
 constexpr uint16_t HBIOS_BASE = 0xFE00;      // Fake HBIOS entry point
 constexpr uint16_t HBIOS_PROXY = 0xFFE0;     // Real HBIOS proxy location (if present)
 
-// HBIOS function codes (passed in B register)
-enum HBiosFunc {
-  // Serial I/O
-  HBF_CIOIN    = 0x00,  // Console input
-  HBF_CIOOUT   = 0x01,  // Console output
-  HBF_CIOIST   = 0x02,  // Console input status
-  HBF_CIOOST   = 0x03,  // Console output status
-  HBF_CIOINIT  = 0x04,  // Console init
-  HBF_CIOQUERY = 0x05,  // Console query
-  HBF_CIODEVICE= 0x06,  // Console device info
-  // Disk I/O
-  HBF_DIOSTATUS= 0x10,  // Disk status
-  HBF_DIORESET = 0x11,  // Disk reset
-  HBF_DIOSEEK  = 0x12,  // Disk seek
-  HBF_DIOREAD  = 0x13,  // Disk read
-  HBF_DIOWRITE = 0x14,  // Disk write
-  HBF_DIOVERIFY= 0x15,  // Disk verify
-  HBF_DIOFORMAT= 0x16,  // Disk format
-  HBF_DIODEVICE= 0x17,  // Disk device info
-  HBF_DIOMEDIA = 0x18,  // Disk media info
-  HBF_DIODEFMED= 0x19,  // Disk define media
-  HBF_DIOCAP   = 0x1A,  // Disk capacity
-  HBF_DIOGEOM  = 0x1B,  // Disk geometry
-  // Extended Disk
-  HBF_EXTSLICE = 0xE0,  // Calculate disk slice (for larger disks)
-  // Management
-  HBF_SYSRESET = 0xF0,  // System reset
-  HBF_SYSVER   = 0xF1,  // Get version (standard HBIOS)
-  HBF_SYSSETBNK= 0xF2,  // Set bank
-  HBF_SYSGETBNK= 0xF3,  // Get current bank
-  HBF_SYSSETCPY= 0xF4,  // Set copy params (source bank, dest bank, count)
-  HBF_SYSBNKCPY= 0xF5,  // Bank copy (execute copy with params from SETCPY)
-  HBF_SYSALLOC = 0xF6,  // Allocate memory from heap
-  HBF_SYSFREE  = 0xF7,  // Free memory
-  HBF_SYSGET   = 0xF8,  // Get system info
-  HBF_SYSSET   = 0xF9,  // Set system info
-  HBF_SYSPEEK  = 0xFA,  // Read byte from bank: D=bank, HL=addr, returns E=byte
-  HBF_SYSPOKE  = 0xFB,  // Write byte to bank: D=bank, HL=addr, E=byte
-  HBF_SYSINT   = 0xFC,  // Interrupt management
-  HBF_SYSBOOT  = 0xFE,  // EMU: Boot from disk (our custom function, avoid conflicts)
-
-  // VDA (Video Display Adapter) functions - 0x20-0x2F
-  HBF_VDASTATUS  = 0x20,  // VDA status
-  HBF_VDARESET   = 0x21,  // VDA reset
-  HBF_VDAQUERY   = 0x22,  // VDA query
-  HBF_VDADEVICE  = 0x23,  // VDA device info
-
-  // DSKY (Display/Keypad) functions - 0x30-0x3A
-  HBF_DSKYRESET  = 0x30,  // Reset DSKY
-  HBF_DSKYSTATUS = 0x31,  // Input status
-  HBF_DSKYGETKEY = 0x32,  // Get key
-  HBF_DSKYSHOWHEX= 0x33,  // Show hex value
-  HBF_DSKYSHOWSEG= 0x34,  // Show segment data
-  HBF_DSKYKEYLEDS= 0x35,  // Set key LEDs
-  HBF_DSKYSTATLED= 0x36,  // Set status LED
-  HBF_DSKYBEEP   = 0x37,  // Beep
-  HBF_DSKYDEVICE = 0x38,  // Device info
-  HBF_DSKYMESSAGE= 0x39,  // Show message
-  HBF_DSKYEVENT  = 0x3A,  // Event update
-};
-
-// HBIOS result codes
-constexpr uint8_t HBR_SUCCESS  = 0x00;  // Success
-constexpr uint8_t HBR_FAILED   = 0xFF;  // Generic failure
+// HBIOS function codes and result codes are now in hbios_dispatch.h
+// Additional result codes used by CLI only:
 constexpr uint8_t HBR_NOTREADY = 0xFE;  // Device not ready
 constexpr uint8_t HBR_WRTPROT  = 0xFD;  // Write protected
-constexpr uint8_t HBR_NOHW     = 0xF8;  // Hardware not present (-8)
 
 // Use banked_mem from romwbw_mem.h - provides both flat and banked memory modes
 // For backward compatibility, alias it as cpm_mem
@@ -3162,16 +3100,16 @@ public:
       }
 
       // VDA functions - no video hardware present
-      case HBF_VDASTATUS:
-      case HBF_VDARESET:
-      case HBF_VDAQUERY:
-      case HBF_VDADEVICE:
+      case HBF_VDAINI:
+      case HBF_VDAQRY:
+      case HBF_VDARES:
+      case HBF_VDADEV:
         result = HBR_NOHW;  // No VDA hardware
         break;
 
       // DSKY functions - no hardware present
       case HBF_DSKYRESET:
-      case HBF_DSKYSTATUS:
+      case HBF_DSKYSTAT:
       case HBF_DSKYGETKEY:
       case HBF_DSKYSHOWHEX:
       case HBF_DSKYSHOWSEG:

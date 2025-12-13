@@ -16,7 +16,12 @@ Completed:
   - Removed --cpm and --disk-a/b/c/d options
   - Updated to version 2.0.0, focused purely on RomWBW/HBIOS
 - Fixed debug output appearing by default (now requires --debug flag)
-- Web files installed to ~/ww/romwbw/
+- Web files installed to ~/www/romwbw/
+- Fixed HBIOS function codes to match official RomWBW hbios.inc
+  - Consolidated HBiosFunc enum to hbios_dispatch.h (single source of truth)
+  - Both CLI and web versions now use shared header
+  - Fixed DIO: added DIOSEEK handler, DIOREAD/DIOWRITE now use current_lba
+  - Fixed VDA/DSKY/SND function names to match official codes
 
 Remaining Tasks:
 ----------------

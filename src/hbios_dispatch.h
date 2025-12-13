@@ -5,6 +5,8 @@
  * different platform implementations (CLI, WebAssembly, iOS).
  *
  * All I/O operations go through emu_io.h for platform independence.
+ *
+ * Function codes derived from RomWBW Source/HBIOS/hbios.inc
  */
 
 #ifndef HBIOS_DISPATCH_H
@@ -16,132 +18,195 @@
 #include <functional>
 
 //=============================================================================
-// HBIOS Function Codes (from RomWBW)
+// HBIOS Function Codes (from RomWBW hbios.inc)
 //=============================================================================
 
-// HBIOS Result codes
+// HBIOS error/result codes (from hbios.inc ERR_* values)
 enum HBiosResult {
-  HBR_SUCCESS  = 0x00,  // Success
-  HBR_FAILED   = 0xFF,  // General failure
-  HBR_PENDING  = 0xFE,  // Operation pending
-  HBR_NODATA   = 0xFD,  // No data available
+  HBR_SUCCESS   = 0,     // ERR_NONE: Success
+  HBR_UNDEF     = -1,    // ERR_UNDEF: Undefined error
+  HBR_NOTIMPL   = -2,    // ERR_NOTIMPL: Function not implemented
+  HBR_NOFUNC    = -3,    // ERR_NOFUNC: Invalid function
+  HBR_NOUNIT    = -4,    // ERR_NOUNIT: Invalid unit number
+  HBR_NOMEM     = -5,    // ERR_NOMEM: Out of memory
+  HBR_RANGE     = -6,    // ERR_RANGE: Parameter out of range
+  HBR_NOMEDIA   = -7,    // ERR_NOMEDIA: Media not present
+  HBR_NOHW      = -8,    // ERR_NOHW: Hardware not present
+  HBR_IO        = -9,    // ERR_IO: I/O error
+  HBR_READONLY  = -10,   // ERR_READONLY: Write to read-only media
+  HBR_TIMEOUT   = -11,   // ERR_TIMEOUT: Device timeout
+  HBR_BADCFG    = -12,   // ERR_BADCFG: Invalid configuration
+  HBR_INTERNAL  = -13,   // ERR_INTERNAL: Internal error
+  // Legacy compatibility
+  HBR_FAILED    = 0xFF,  // Generic failure (unsigned)
 };
 
 // HBIOS function codes (passed in B register)
+// Derived from RomWBW hbios.inc BF_* definitions
 enum HBiosFunc {
-  // Serial I/O (Character I/O)
-  HBF_CIOIN    = 0x00,  // Read character
-  HBF_CIOOUT   = 0x01,  // Write character
-  HBF_CIOIST   = 0x02,  // Input status
-  HBF_CIOOST   = 0x03,  // Output status
-  HBF_CIOINIT  = 0x04,  // Initialize port
-  HBF_CIOQUERY = 0x05,  // Query port
-  HBF_CIODEVICE= 0x06,  // Get device info
+  // Character I/O (CIO) - 0x00-0x06
+  HBF_CIO       = 0x00,
+  HBF_CIOIN     = 0x00,  // Character input
+  HBF_CIOOUT    = 0x01,  // Character output
+  HBF_CIOIST    = 0x02,  // Character input status
+  HBF_CIOOST    = 0x03,  // Character output status
+  HBF_CIOINIT   = 0x04,  // Init/reset device/line config
+  HBF_CIOQUERY  = 0x05,  // Report device/line config
+  HBF_CIODEVICE = 0x06,  // Report device info
 
-  // Disk I/O
-  HBF_DIOSTATUS= 0x10,  // Get disk status
-  HBF_DIORESET = 0x11,  // Reset disk
-  HBF_DIOREAD  = 0x12,  // Read sectors
-  HBF_DIOWRITE = 0x13,  // Write sectors
-  HBF_DIOVERIFY= 0x14,  // Verify sectors
-  HBF_DIOSENSE = 0x15,  // Sense media
-  HBF_DIOCAP   = 0x16,  // Get capacity
-  HBF_DIOGEOM  = 0x17,  // Get geometry
-  HBF_DIOINIT  = 0x18,  // Initialize disk
-  HBF_DIOQUERY = 0x19,  // Query disk
-  HBF_DIODEVICE= 0x1A,  // Get device info
-  HBF_DIOFORMAT= 0x1B,  // Format track
+  // Disk I/O (DIO) - 0x10-0x1B
+  HBF_DIO       = 0x10,
+  HBF_DIOSTATUS = 0x10,  // Disk status
+  HBF_DIORESET  = 0x11,  // Disk reset
+  HBF_DIOSEEK   = 0x12,  // Disk seek
+  HBF_DIOREAD   = 0x13,  // Disk read sectors
+  HBF_DIOWRITE  = 0x14,  // Disk write sectors
+  HBF_DIOVERIFY = 0x15,  // Disk verify sectors
+  HBF_DIOFORMAT = 0x16,  // Disk format track
+  HBF_DIODEVICE = 0x17,  // Disk device info report
+  HBF_DIOMEDIA  = 0x18,  // Disk media report
+  HBF_DIODEFMED = 0x19,  // Define disk media
+  HBF_DIOCAP    = 0x1A,  // Disk capacity report
+  HBF_DIOGEOM   = 0x1B,  // Disk geometry report
 
-  // DSKY (Display/Keypad) functions - 0x30-0x3A
-  HBF_DSKYRESET  = 0x30,  // Reset DSKY
-  HBF_DSKYSTATUS = 0x31,  // Input status
-  HBF_DSKYGETKEY = 0x32,  // Get key
-  HBF_DSKYSETLEDS= 0x33,  // Set LEDs
-  HBF_DSKYSETHEX = 0x34,  // Set hex display
-  HBF_DSKYSETSEG = 0x35,  // Set segments
-  HBF_DSKYBEEP   = 0x36,  // Beep
-  HBF_DSKYINIT   = 0x38,  // Initialize
-  HBF_DSKYQUERY  = 0x39,  // Query
-  HBF_DSKYDEVICE = 0x3A,  // Get device info
+  // RTC (Real-Time Clock) - 0x20-0x28
+  HBF_RTC       = 0x20,
+  HBF_RTCGETTIM = 0x20,  // Get time
+  HBF_RTCSETTIM = 0x21,  // Set time
+  HBF_RTCGETBYT = 0x22,  // Get NVRAM byte by index
+  HBF_RTCSETBYT = 0x23,  // Set NVRAM byte by index
+  HBF_RTCGETBLK = 0x24,  // Get NVRAM data block
+  HBF_RTCSETBLK = 0x25,  // Set NVRAM data block
+  HBF_RTCGETALM = 0x26,  // Get alarm
+  HBF_RTCSETALM = 0x27,  // Set alarm
+  HBF_RTCDEVICE = 0x28,  // RTC device info report
 
-  // Video Display Adapter (VDA) functions - 0x40-0x4F
-  HBF_VDAINIT    = 0x40,  // Initialize
-  HBF_VDAQUERY   = 0x41,  // Query
-  HBF_VDARESET   = 0x42,  // Reset
-  HBF_VDADEVICE  = 0x43,  // Get device info
-  HBF_VDASCS     = 0x44,  // Set cursor style
-  HBF_VDASCP     = 0x45,  // Set cursor position
-  HBF_VDASAT     = 0x46,  // Set attribute
-  HBF_VDASCO     = 0x47,  // Set color
-  HBF_VDAWRC     = 0x48,  // Write character
-  HBF_VDAFIL     = 0x49,  // Fill region
-  HBF_VDACPY     = 0x4A,  // Copy region
-  HBF_VDASCR     = 0x4B,  // Scroll
-  HBF_VDAKST     = 0x4C,  // Keyboard status
-  HBF_VDAKFL     = 0x4D,  // Keyboard flush
-  HBF_VDAKRD     = 0x4E,  // Keyboard read
-  HBF_VDARDC     = 0x4F,  // Read character at cursor
+  // DSKY (Display/Keypad) - 0x30-0x3A
+  HBF_DSKY       = 0x30,
+  HBF_DSKYRESET  = 0x30,  // Reset DSKY hardware
+  HBF_DSKYSTAT   = 0x31,  // Get keypad status
+  HBF_DSKYGETKEY = 0x32,  // Get key from keypad
+  HBF_DSKYSHOWHEX= 0x33,  // Display binary value in hex
+  HBF_DSKYSHOWSEG= 0x34,  // Display encoded segment string
+  HBF_DSKYKEYLEDS= 0x35,  // Set/clear keypad LEDs
+  HBF_DSKYSTATLED= 0x36,  // Set/clear status LEDs
+  HBF_DSKYBEEP   = 0x37,  // Beep onboard DSKY speaker
+  HBF_DSKYDEVICE = 0x38,  // DSKY device info report
+  HBF_DSKYMESSAGE= 0x39,  // DSKY message handling
+  HBF_DSKYEVENT  = 0x3A,  // DSKY event handling
 
-  // Sound functions - 0x50-0x58
-  HBF_SNDRESET   = 0x50,  // Reset
-  HBF_SNDVOL     = 0x51,  // Set volume
-  HBF_SNDPER     = 0x52,  // Set period
-  HBF_SNDNOTE    = 0x53,  // Set note
-  HBF_SNDPLAY    = 0x54,  // Play
-  HBF_SNDQUERY   = 0x55,  // Query
-  HBF_SNDDUR     = 0x56,  // Set duration
-  HBF_SNDDEVICE  = 0x57,  // Get device info
-  HBF_SNDBEEP    = 0x58,  // Simple beep
+  // Video Display Adapter (VDA) - 0x40-0x4F
+  HBF_VDA       = 0x40,
+  HBF_VDAINI    = 0x40,  // Initialize VDU
+  HBF_VDAQRY    = 0x41,  // Query VDU status
+  HBF_VDARES    = 0x42,  // Soft reset VDU
+  HBF_VDADEV    = 0x43,  // Device info
+  HBF_VDASCS    = 0x44,  // Set cursor style
+  HBF_VDASCP    = 0x45,  // Set cursor position
+  HBF_VDASAT    = 0x46,  // Set character attribute
+  HBF_VDASCO    = 0x47,  // Set character color
+  HBF_VDAWRC    = 0x48,  // Write character
+  HBF_VDAFIL    = 0x49,  // Fill
+  HBF_VDACPY    = 0x4A,  // Copy
+  HBF_VDASCR    = 0x4B,  // Scroll
+  HBF_VDAKST    = 0x4C,  // Get keyboard status
+  HBF_VDAKFL    = 0x4D,  // Flush keyboard buffer
+  HBF_VDAKRD    = 0x4E,  // Read keyboard
+  HBF_VDARDC    = 0x4F,  // Read character
 
-  // RTC (Real-Time Clock) - 0x20-0x2F
-  HBF_RTCGETTIM  = 0x20,  // Get time
-  HBF_RTCSETTIM  = 0x21,  // Set time
-  HBF_RTCGETBYT  = 0x22,  // Get NVRAM byte
-  HBF_RTCSETBYT  = 0x23,  // Set NVRAM byte
-  HBF_RTCGETBLK  = 0x24,  // Get NVRAM block
-  HBF_RTCSETBLK  = 0x25,  // Set NVRAM block
-  HBF_RTCGETALA  = 0x26,  // Get alarm
-  HBF_RTCSETALA  = 0x27,  // Set alarm
-  HBF_RTCINIT    = 0x28,  // Initialize
-  HBF_RTCQUERY   = 0x29,  // Query
-  HBF_RTCDEVICE  = 0x2A,  // Get device info
+  // Sound (SND) - 0x50-0x58
+  HBF_SND       = 0x50,
+  HBF_SNDRESET  = 0x50,  // Reset sound system
+  HBF_SNDVOL    = 0x51,  // Request sound volume
+  HBF_SNDPRD    = 0x52,  // Request sound period
+  HBF_SNDNOTE   = 0x53,  // Request note
+  HBF_SNDPLAY   = 0x54,  // Initiate sound command
+  HBF_SNDQUERY  = 0x55,  // Query sound capabilities
+  HBF_SNDDUR    = 0x56,  // Request duration
+  HBF_SNDDEVICE = 0x57,  // Sound device info request
+  HBF_SNDBEEP   = 0x58,  // Play beep sound
 
-  // System functions - 0xF0-0xFF
-  HBF_SYSRESET   = 0xF0,  // System reset
-  HBF_SYSVER     = 0xF1,  // Get HBIOS version
-  HBF_SYSSETBNK  = 0xF2,  // Set bank
-  HBF_SYSGETBNK  = 0xF3,  // Get bank
-  HBF_SYSSETCPY  = 0xF4,  // Set copy params
-  HBF_SYSBNKCPY  = 0xF5,  // Bank-to-bank copy
-  HBF_SYSALLOC   = 0xF6,  // Allocate memory
-  HBF_SYSFREE    = 0xF7,  // Free memory
-  HBF_SYSGET     = 0xF8,  // Get system info
-  HBF_SYSSET     = 0xF9,  // Set system info
-  HBF_SYSPEEK    = 0xFA,  // Peek byte from bank
-  HBF_SYSPOKE    = 0xFB,  // Poke byte to bank
-  HBF_SYSINT     = 0xFC,  // Interrupt management
-  HBF_SYSBOOT    = 0xFE,  // EMU: Boot from device (custom)
+  // Extension Functions - 0xE0
+  HBF_EXT       = 0xE0,
+  HBF_EXTSLICE  = 0xE0,  // Slice calculation
+
+  // System Functions - 0xF0-0xFC
+  HBF_SYS       = 0xF0,
+  HBF_SYSRESET  = 0xF0,  // Soft reset HBIOS
+  HBF_SYSVER    = 0xF1,  // Get HBIOS version
+  HBF_SYSSETBNK = 0xF2,  // Set current bank
+  HBF_SYSGETBNK = 0xF3,  // Get current bank
+  HBF_SYSSETCPY = 0xF4,  // Bank memory copy setup
+  HBF_SYSBNKCPY = 0xF5,  // Bank memory copy
+  HBF_SYSALLOC  = 0xF6,  // Alloc HBIOS heap memory
+  HBF_SYSFREE   = 0xF7,  // Free HBIOS heap memory
+  HBF_SYSGET    = 0xF8,  // Get HBIOS info
+  HBF_SYSSET    = 0xF9,  // Set HBIOS parameters
+  HBF_SYSPEEK   = 0xFA,  // Get byte from alt bank
+  HBF_SYSPOKE   = 0xFB,  // Set byte in alt bank
+  HBF_SYSINT    = 0xFC,  // Manage interrupt vectors
+
+  // EMU custom extension (avoid conflict with standard codes)
+  HBF_SYSBOOT   = 0xFE,  // EMU: Boot from device
 };
 
-// SYSGET/SYSSET subfunctions (C register)
+// SYSRESET subtypes (C register for SYSRESET)
+enum HBiosSysResetType {
+  SYSRES_INT    = 0x00,  // Reset HBIOS internal
+  SYSRES_WARM   = 0x01,  // Warm start (restart boot loader)
+  SYSRES_COLD   = 0x02,  // Cold start
+  SYSRES_USER   = 0x03,  // User reset request
+};
+
+// SYSGET subfunctions (C register for SYSGET)
 enum HBiosSysGetFunc {
-  SYSGET_CIOCNT    = 0x00,  // Get CIO device count
-  SYSGET_CIODEV    = 0x01,  // Get CIO device info
-  SYSGET_DIOCNT    = 0x10,  // Get DIO device count
-  SYSGET_DIODEV    = 0x11,  // Get DIO device info
-  SYSGET_RTCCNT    = 0x20,  // Get RTC device count
-  SYSGET_RTCDEV    = 0x21,  // Get RTC device info
-  SYSGET_VDACNT    = 0x40,  // Get VDA device count
-  SYSGET_VDADEV    = 0x41,  // Get VDA device info
-  SYSGET_SNDCNT    = 0x50,  // Get SND device count
-  SYSGET_SNDDEV    = 0x51,  // Get SND device info
-  SYSGET_TIMER     = 0xD0,  // Get timer value
-  SYSGET_SECS      = 0xD1,  // Get seconds counter
-  SYSGET_BOOTINFO  = 0xD2,  // Get boot info
-  SYSGET_CPUINFO   = 0xF0,  // Get CPU info
-  SYSGET_MEMINFO   = 0xF1,  // Get memory info
-  SYSGET_BNKINFO   = 0xF2,  // Get bank info
-  SYSGET_DEVLIST   = 0xFD,  // EMU: List available devices (custom)
+  SYSGET_CIOCNT   = 0x00,  // Get char unit count
+  SYSGET_CIOFN    = 0x01,  // Get CIO unit fn/data adr
+  SYSGET_DIOCNT   = 0x10,  // Get disk unit count
+  SYSGET_DIOFN    = 0x11,  // Get DIO unit fn/data adr
+  SYSGET_RTCCNT   = 0x20,  // Get RTC unit count
+  SYSGET_DSKYCNT  = 0x30,  // Get DSKY unit count
+  SYSGET_VDACNT   = 0x40,  // Get VDA unit count
+  SYSGET_VDAFN    = 0x41,  // Get VDA unit fn/data adr
+  SYSGET_SNDCNT   = 0x50,  // Get SND unit count
+  SYSGET_SNDFN    = 0x51,  // Get SND unit fn/data adr
+  SYSGET_SWITCH   = 0xC0,  // Get non-volatile switch value
+  SYSGET_TIMER    = 0xD0,  // Get current timer value
+  SYSGET_SECS     = 0xD1,  // Get current seconds value
+  SYSGET_BOOTINFO = 0xE0,  // Get boot information
+  SYSGET_CPUINFO  = 0xF0,  // Get CPU information
+  SYSGET_MEMINFO  = 0xF1,  // Get memory capacity info
+  SYSGET_BNKINFO  = 0xF2,  // Get bank assignment info
+  SYSGET_CPUSPD   = 0xF3,  // Get clock speed & wait states
+  SYSGET_PANEL    = 0xF4,  // Get front panel switches val
+  SYSGET_APPBNKS  = 0xF5,  // Get app bank information
+  // EMU custom extension
+  SYSGET_DEVLIST  = 0xFD,  // EMU: List available devices
+};
+
+// SYSSET subfunctions (C register for SYSSET)
+enum HBiosSysSetFunc {
+  SYSSET_SWITCH   = 0xC0,  // Set non-volatile switch value
+  SYSSET_TIMER    = 0xD0,  // Set timer value
+  SYSSET_SECS     = 0xD1,  // Set seconds value
+  SYSSET_BOOTINFO = 0xE0,  // Set boot information
+  SYSSET_CPUSPD   = 0xF3,  // Set clock speed & wait states
+  SYSSET_PANEL    = 0xF4,  // Set front panel LEDs
+};
+
+// Media ID values
+enum HBiosMediaId {
+  MID_NONE   = 0,
+  MID_MDROM  = 1,
+  MID_MDRAM  = 2,
+  MID_RF     = 3,
+  MID_HD     = 4,
+  MID_FD720  = 5,
+  MID_FD144  = 6,
+  MID_FD360  = 7,
+  MID_FD120  = 8,
+  MID_FD111  = 9,
+  MID_HDNEW  = 10,
 };
 
 //=============================================================================
@@ -155,6 +220,7 @@ struct HBDisk {
   void* handle = nullptr;     // For file-backed disks (emu_disk_handle)
   bool file_backed = false;
   size_t size = 0;
+  uint32_t current_lba = 0;   // Current LBA position (set by DIOSEEK)
 };
 
 //=============================================================================
