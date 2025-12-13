@@ -114,8 +114,17 @@ static void handle_out(uint8_t port, uint8_t value) {
 // Main Execution Loop
 //=============================================================================
 
+static int batch_count = 0;
+
 static void run_batch() {
   if (!running || waiting_for_input) return;
+
+  batch_count++;
+  // Log first few batches and then every 100th batch (only in debug mode)
+  if (debug && (batch_count <= 5 || batch_count % 100 == 0)) {
+    emu_log("[BATCH] #%d starting, PC=0x%04X, instr=%lld\n",
+            batch_count, cpu.regs.PC.get_pair16(), instruction_count);
+  }
 
   for (int i = 0; i < 50000 && running && !waiting_for_input; i++) {
     uint16_t pc = cpu.regs.PC.get_pair16();
@@ -315,6 +324,7 @@ void romwbw_start() {
   hbios.setCPU(&cpu);
   hbios.setMemory(&memory);
   hbios.setDebug(debug);
+  hbios.reset();  // Reset HBIOS state for new ROM
 
   // Register reset callback for SYSRESET (REBOOT command)
   hbios.setResetCallback(handle_sysreset);
@@ -333,6 +343,7 @@ void romwbw_start() {
   running = true;
   waiting_for_input = false;
   instruction_count = 0;
+  batch_count = 0;
 
   emu_status("RomWBW starting...");
 }
@@ -347,6 +358,12 @@ void romwbw_stop() {
 EMSCRIPTEN_KEEPALIVE
 int romwbw_is_running() {
   return running ? 1 : 0;
+}
+
+// Check if waiting for input
+EMSCRIPTEN_KEEPALIVE
+int romwbw_is_waiting() {
+  return waiting_for_input ? 1 : 0;
 }
 
 // Get instruction count
@@ -367,6 +384,14 @@ void romwbw_set_debug(int enable) {
   debug = (enable != 0);
   memory.set_debug(debug);
   hbios.setDebug(debug);
+}
+
+// Run a single batch of instructions (for testing)
+EMSCRIPTEN_KEEPALIVE
+int romwbw_run_batch() {
+  if (!running) return 0;
+  run_batch();
+  return running ? 1 : 0;
 }
 
 // Auto-start with preloaded files

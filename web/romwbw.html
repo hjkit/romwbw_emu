@@ -95,8 +95,10 @@
       <label>ROM:</label>
       <select id="romSelect" style="margin-right:4px;">
         <option value="">-- Select ROM --</option>
+        <option value="SBC_simh_std.rom" selected>SBC_simh_std.rom (SIMH)</option>
         <option value="emu_romwbw.rom">emu_romwbw.rom (EMU build)</option>
-        <option value="SBC_simh_std.rom">SBC_simh_std.rom (SIMH)</option>
+        <option value="RCZ80_std.rom">RCZ80_std.rom</option>
+        <option value="emu_rcz80.rom">emu_rcz80.rom</option>
       </select>
       <input type="file" id="romFile" accept=".rom,.bin" style="width:180px;">
       <label style="margin-left:12px;">Boot:</label><input type="text" id="bootString" placeholder="e.g., 0, C" style="width:80px;">
@@ -524,6 +526,7 @@
       }
 
       Module._romwbw_start();
+      if (debugCheckbox.checked) startDebugMonitor();  // Start monitoring only if debug enabled
       stopBtn.disabled = false;
       term.focus();
     });
@@ -531,6 +534,7 @@
     // Stop button
     stopBtn.addEventListener('click', function() {
       Module._romwbw_stop();
+      stopDebugMonitor();  // Stop monitoring
       startBtn.disabled = false;
       stopBtn.disabled = true;
       statusDiv.textContent = 'Stopped';
@@ -572,6 +576,51 @@
     document.getElementById('terminal-container').addEventListener('click', function() {
       term.focus();
     });
+
+    // Debug monitoring - tracks emulator state periodically
+    let debugMonitorId = null;
+    let lastInstructionCount = 0;
+    let noProgressCount = 0;
+
+    function startDebugMonitor() {
+      if (debugMonitorId) return;
+      lastInstructionCount = 0;
+      noProgressCount = 0;
+      debugMonitorId = setInterval(() => {
+        if (!Module._romwbw_is_running) return;
+        const running = Module._romwbw_is_running();
+        const waiting = Module._romwbw_is_waiting ? Module._romwbw_is_waiting() : -1;
+        const pc = Module._romwbw_get_pc();
+        const instr = Module._romwbw_get_instruction_count();
+        const progress = instr - lastInstructionCount;
+
+        if (progress === 0) {
+          noProgressCount++;
+          console.log(`[DEBUG] NO PROGRESS #${noProgressCount}: running=${running} waiting=${waiting} PC=0x${pc.toString(16)} instr=${instr}`);
+          if (noProgressCount >= 10) {
+            console.error('[DEBUG] HUNG - 10+ cycles with no progress');
+          }
+        } else {
+          if (noProgressCount > 0) {
+            console.log(`[DEBUG] Progress resumed: ${progress} instructions`);
+          }
+          noProgressCount = 0;
+        }
+        lastInstructionCount = instr;
+
+        if (!running) {
+          console.log('[DEBUG] Emulator stopped');
+          stopDebugMonitor();
+        }
+      }, 500);
+    }
+
+    function stopDebugMonitor() {
+      if (debugMonitorId) {
+        clearInterval(debugMonitorId);
+        debugMonitorId = null;
+      }
+    }
 
     // Wait for WASM to load
     Module.onRuntimeInitialized = function() {
