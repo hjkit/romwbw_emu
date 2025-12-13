@@ -591,11 +591,11 @@ static ConsoleResult handle_console_mode(qkz80* cpu, cpm_mem* memory) {
         if (count < 1) count = 1;
         if (count > 256) count = 256;
       }
-      char* mem = cpu->get_mem();
+      uint8_t* mem = cpu->get_mem();
       for (int i = 0; i < count; i++) {
         uint16_t a = (addr + i) & 0xFFFF;
         fprintf(stderr, "  %s: %02X\n", format_address(a).c_str(),
-                (uint8_t)mem[a]);
+                mem[a]);
       }
       continue;
     }
@@ -617,7 +617,7 @@ static ConsoleResult handle_console_mode(qkz80* cpu, cpm_mem* memory) {
         if (count < 1) count = 1;
         if (count > 4096) count = 4096;
       }
-      char* mem = cpu->get_mem();
+      uint8_t* mem = cpu->get_mem();
       for (int i = 0; i < count; i += 16) {
         uint16_t a = (addr + i) & 0xFFFF;
         fprintf(stderr, "  %04X: ", a);
@@ -652,7 +652,7 @@ static ConsoleResult handle_console_mode(qkz80* cpu, cpm_mem* memory) {
         continue;
       }
       // Parse remaining values from the line
-      char* mem = cpu->get_mem();
+      uint8_t* mem = cpu->get_mem();
       char* p = line;
       // Skip command
       while (*p && !isspace(*p)) p++;
@@ -3607,7 +3607,7 @@ int main(int argc, char** argv) {
     }
   } else {
     // Load into flat 64KB memory
-    char* mem = cpu.get_mem();
+    uint8_t* mem = cpu.get_mem();
     memset(mem, 0, 65536);
 
     size_t loaded = fread(&mem[load_addr], 1, file_size, fp);
