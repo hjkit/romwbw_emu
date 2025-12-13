@@ -288,7 +288,7 @@ int HBIOSDispatch::getTrapTypeFromFunc(uint8_t func) {
   if (func <= 0x0F) return 0;        // CIO (0x00-0x0F)
   if (func <= 0x1F) return 1;        // DIO (0x10-0x1F)
   if (func <= 0x2F) return 2;        // RTC (0x20-0x2F)
-  if (func <= 0x3F) return -1;       // DSKY (0x30-0x3F) - not separately handled
+  if (func <= 0x3F) return 6;        // DSKY (0x30-0x3F)
   if (func <= 0x4F) return 4;        // VDA (0x40-0x4F)
   if (func <= 0x5F) return 5;        // SND (0x50-0x5F)
   if (func >= 0xF0) return 3;        // SYS (0xF0-0xFF)
@@ -304,6 +304,7 @@ bool HBIOSDispatch::handleCall(int trap_type) {
     case 3: handleSYS(); break;
     case 4: handleVDA(); break;
     case 5: handleSND(); break;
+    case 6: handleDSKY(); break;
     default: return false;
   }
   return true;
@@ -313,10 +314,14 @@ bool HBIOSDispatch::handleMainEntry() {
   if (!cpu) return false;
 
   uint8_t func = cpu->regs.BC.get_high();
+  uint8_t unit = cpu->regs.BC.get_low();
   int trap_type = getTrapTypeFromFunc(func);
 
   if (debug) {
-    emu_log("[HBIOS] Main entry: func=0x%02X type=%d\n", func, trap_type);
+    uint16_t de = cpu->regs.DE.get_pair16();
+    uint16_t hl = cpu->regs.HL.get_pair16();
+    emu_log("[HBIOS] func=0x%02X unit=0x%02X DE=0x%04X HL=0x%04X type=%d\n",
+            func, unit, de, hl, trap_type);
   }
 
   switch (trap_type) {
@@ -326,8 +331,12 @@ bool HBIOSDispatch::handleMainEntry() {
     case 3: handleSYS(); return true;
     case 4: handleVDA(); return true;
     case 5: handleSND(); return true;
+    case 6: handleDSKY(); return true;
     default:
       // Unknown function - return error and RET
+      if (debug) {
+        emu_log("[HBIOS] Unknown function 0x%02X (trap_type=%d)\n", func, trap_type);
+      }
       cpu->regs.AF.set_high(HBR_FAILED);
       doRet();
       return true;
@@ -722,11 +731,9 @@ void HBIOSDispatch::handleSYS() {
     case HBF_SYSRESET: {
       // System reset - C register: 0x01 = warm boot, 0x02 = cold boot
       uint8_t reset_type = subfunc;  // subfunc is C register
+      // Always log SYSRESET since it causes reboot
+      emu_log("[HBIOS SYSRESET] reset_type=0x%02X\n", reset_type);
       if (reset_type == 0x01 || reset_type == 0x02) {
-        if (debug) {
-          emu_log("[HBIOS SYSRESET] %s boot requested\n",
-                  reset_type == 0x01 ? "Warm" : "Cold");
-        }
         // Call the reset callback if set
         if (reset_callback) {
           reset_callback(reset_type);
@@ -1096,6 +1103,44 @@ void HBIOSDispatch::handleSND() {
     default:
       if (debug) {
         emu_log("[HBIOS SND] Unhandled function 0x%02X\n", func);
+      }
+      break;
+  }
+
+  cpu->regs.AF.set_high(result);
+  doRet();
+}
+
+//=============================================================================
+// DSKY (Display/Keypad)
+//=============================================================================
+
+void HBIOSDispatch::handleDSKY() {
+  if (!cpu) return;
+
+  uint8_t func = cpu->regs.BC.get_high();
+  uint8_t result = HBR_NOHW;  // No DSKY hardware present
+
+  // All DSKY functions return HBR_NOHW since we don't emulate DSKY hardware
+  // This matches the CLI behavior
+  switch (func) {
+    case HBF_DSKYRESET:
+    case HBF_DSKYSTAT:
+    case HBF_DSKYGETKEY:
+    case HBF_DSKYSHOWHEX:
+    case HBF_DSKYSHOWSEG:
+    case HBF_DSKYKEYLEDS:
+    case HBF_DSKYSTATLED:
+    case HBF_DSKYBEEP:
+    case HBF_DSKYDEVICE:
+    case HBF_DSKYMESSAGE:
+    case HBF_DSKYEVENT:
+      // All return HBR_NOHW
+      break;
+
+    default:
+      if (debug) {
+        emu_log("[HBIOS DSKY] Unhandled function 0x%02X\n", func);
       }
       break;
   }

@@ -317,6 +317,7 @@ public:
   void handleSYS();   // System functions
   void handleVDA();   // Video display
   void handleSND();   // Sound
+  void handleDSKY();  // Display/Keypad
 
   // Get dispatch addresses (for debugging)
   uint16_t getCIODispatch() const { return cio_dispatch; }
