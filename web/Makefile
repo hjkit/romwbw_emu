@@ -27,7 +27,7 @@ SRCS = cpm_web.cc \
        ../src/qkz80_errors.cc
 
 # qkz80 sources from cpmemu project (for WebAssembly build)
-QKZ80_SRC = /home/wohl2/src/cpmemu/src
+QKZ80_SRC = ../../cpmemu/src
 
 ROMWBW_SRCS = romwbw_web.cc \
               $(QKZ80_SRC)/qkz80.cc \
