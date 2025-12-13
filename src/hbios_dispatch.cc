@@ -54,6 +54,21 @@ void HBIOSDispatch::reset() {
     snd_period[i] = 0;
   }
   snd_duration = 100;
+
+  // Note: NVRAM is NOT cleared on reset - it's persistent
+}
+
+//=============================================================================
+// NVRAM Management
+//=============================================================================
+
+void HBIOSDispatch::loadNvram(const uint8_t* data, int size) {
+  if (!data || size <= 0) return;
+  int copy_size = (size < NVRAM_SIZE) ? size : NVRAM_SIZE;
+  memcpy(nvram, data, copy_size);
+  if (debug) {
+    emu_log("[HBIOS] NVRAM loaded: %d bytes\n", copy_size);
+  }
 }
 
 //=============================================================================
@@ -703,6 +718,83 @@ void HBIOSDispatch::handleRTC() {
     case HBF_RTCSETTIM:
       // Set time - ignored in emulator
       break;
+
+    case HBF_RTCGETBYT: {
+      // Get NVRAM byte by index
+      // C = index, returns E = value
+      uint8_t index = cpu->regs.BC.get_low();
+      if (index < NVRAM_SIZE) {
+        cpu->regs.DE.set_low(nvram[index]);
+        if (debug) {
+          emu_log("[HBIOS RTC] GETBYT index=%d value=0x%02X\n", index, nvram[index]);
+        }
+      } else {
+        cpu->regs.DE.set_low(0);
+        result = HBR_RANGE;
+      }
+      break;
+    }
+
+    case HBF_RTCSETBYT: {
+      // Set NVRAM byte by index
+      // C = index, E = value
+      uint8_t index = cpu->regs.BC.get_low();
+      uint8_t value = cpu->regs.DE.get_low();
+      if (index < NVRAM_SIZE) {
+        nvram[index] = value;
+        if (debug) {
+          emu_log("[HBIOS RTC] SETBYT index=%d value=0x%02X\n", index, value);
+        }
+        // Notify save callback
+        if (nvram_save_callback) {
+          nvram_save_callback(nvram, NVRAM_SIZE);
+        }
+      } else {
+        result = HBR_RANGE;
+      }
+      break;
+    }
+
+    case HBF_RTCGETBLK: {
+      // Get NVRAM data block
+      // HL = buffer address, returns buffer filled with NVRAM contents
+      uint16_t buffer = cpu->regs.HL.get_pair16();
+      for (int i = 0; i < NVRAM_SIZE && memory; i++) {
+        memory->store_mem(buffer + i, nvram[i]);
+      }
+      cpu->regs.DE.set_low(NVRAM_SIZE);  // Return size in E
+      if (debug) {
+        emu_log("[HBIOS RTC] GETBLK buffer=0x%04X size=%d\n", buffer, NVRAM_SIZE);
+      }
+      break;
+    }
+
+    case HBF_RTCSETBLK: {
+      // Set NVRAM data block
+      // HL = buffer address, C = count
+      uint16_t buffer = cpu->regs.HL.get_pair16();
+      uint8_t count = cpu->regs.BC.get_low();
+      if (count > NVRAM_SIZE) count = NVRAM_SIZE;
+      for (int i = 0; i < count && memory; i++) {
+        nvram[i] = memory->fetch_mem(buffer + i);
+      }
+      if (debug) {
+        emu_log("[HBIOS RTC] SETBLK buffer=0x%04X count=%d\n", buffer, count);
+      }
+      // Notify save callback
+      if (nvram_save_callback) {
+        nvram_save_callback(nvram, NVRAM_SIZE);
+      }
+      break;
+    }
+
+    case HBF_RTCDEVICE: {
+      // RTC device info
+      // Return device type in D, attributes in E
+      cpu->regs.DE.set_high(0x01);  // Device type: DS1302/generic RTC
+      cpu->regs.DE.set_low(0x01);   // Attributes: has NVRAM
+      break;
+    }
 
     default:
       if (debug) {
