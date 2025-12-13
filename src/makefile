@@ -5,8 +5,14 @@ all: romwbw_emu
 
 # Use pkg-config to find qkz80 library, unless overridden in local.mk
 # Set QKZ80_CFLAGS and QKZ80_LIBS in local.mk if qkz80 is not installed system-wide
-QKZ80_CFLAGS ?= $(shell pkg-config --cflags qkz80 2>/dev/null || echo "-I/usr/local/include/qkz80")
-QKZ80_LIBS ?= $(shell pkg-config --libs qkz80 2>/dev/null || echo "-L/usr/local/lib -lqkz80")
+# Fallback order: pkg-config -> sister directory (../../cpmemu/src) -> /usr/local
+SISTER_QKZ80 = $(realpath $(dir $(lastword $(MAKEFILE_LIST)))/../../cpmemu/src)
+QKZ80_CFLAGS ?= $(shell pkg-config --cflags qkz80 2>/dev/null || \
+    ([ -f "$(SISTER_QKZ80)/qkz80.h" ] && echo "-I$(SISTER_QKZ80)") || \
+    echo "-I/usr/local/include/qkz80")
+QKZ80_LIBS ?= $(shell pkg-config --libs qkz80 2>/dev/null || \
+    ([ -f "$(SISTER_QKZ80)/libqkz80.a" ] && echo "-L$(SISTER_QKZ80) -lqkz80") || \
+    echo "-L/usr/local/lib -lqkz80")
 
 CXXFLAGS = -std=c++11 -Wall -O2 -I. $(QKZ80_CFLAGS)
 LDFLAGS ?=
