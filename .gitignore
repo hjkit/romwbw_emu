@@ -10,8 +10,17 @@ src/romwbw_emu
 # WebAssembly build artifacts
 web/*.js
 web/*.wasm
+web/*.wasm.map
 web/*.data
 web/cpm_cli
+
+# Disk images (large binary files)
+web/*.img
+disks/*.img
+
+# Node.js
+web/node_modules/
+web/package-lock.json
 
 # Editor files
 *~
@@ -29,6 +38,10 @@ Thumbs.db
 *.map
 *.hex
 *.ihx
+*.sym
 
 # Local machine-specific makefile settings
 src/local.mk
+
+# Temporary/test files
+todo.txt
