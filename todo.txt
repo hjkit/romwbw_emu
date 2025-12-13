@@ -1,0 +1,43 @@
+RomWBW Emulator - Remaining Tasks
+==================================
+
+Status: CLI version works. WebAssembly version needs testing.
+
+Completed:
+----------
+- Split off from ~/src/cpmemu - DONE
+- CLI version builds and runs using installed qkz80 library
+- Updated web/Makefile to use qkz80 sources from cpmemu for WASM build
+
+Remaining Tasks:
+----------------
+
+1. BUILD AND TEST WEBASSEMBLY VERSION
+   - Log in as user with emscripten installed
+   - cd web && make romwbw.js
+   - Test with: make serve-romwbw (opens http://localhost:8080)
+   - Load romwbw.html and test with emu_romwbw.rom or SBC_simh_std.rom
+   - Debug memory bank switching issues mentioned in previous notes
+
+2. VERIFY ALL OSes BOOT
+   - At boot prompt, test each OS option:
+     - 0 (ROM disk boot)
+     - C (CP/M)
+     - Z (ZSDOS)
+   - Ensure boot ROM prompt works in both CLI and WebAssembly
+
+3. REFACTOR SHARED CODE (if not already done)
+   - Memory bank code is in romwbw_mem.h (shared)
+   - HBIOS dispatch is in hbios_dispatch.cc (shared)
+   - I/O abstraction is in emu_io.h with emu_io_cli.cc / emu_io_wasm.cc
+   - Verify the factoring is complete and both versions use same core
+
+4. OPTIONAL: Make QKZ80_SRC path in web/Makefile configurable
+   - Currently hardcoded to /home/wohl2/src/cpmemu/src
+   - Could use environment variable or local.mk override
+
+Notes:
+------
+- CLI emulator: ./src/romwbw_emu --romwbw roms/emu_romwbw.rom
+- Console escape: Ctrl+E
+- Boot help: press H at boot prompt

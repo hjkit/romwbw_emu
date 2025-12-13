@@ -13,6 +13,7 @@ LDFLAGS = -s WASM=1 \
           --preload-file drivec.img@/drivec
 
 # RomWBW WebAssembly build flags
+ROMWBW_CFLAGS = -O2 -std=c++11 -I$(QKZ80_SRC)
 ROMWBW_LDFLAGS = -s WASM=1 \
           -s EXPORTED_FUNCTIONS='["_main","_romwbw_key_input","_romwbw_set_boot_string","_romwbw_load_rom","_romwbw_load_disk","_romwbw_get_disk_data","_romwbw_get_disk_size","_romwbw_start","_romwbw_stop","_romwbw_is_running","_romwbw_get_instruction_count","_romwbw_get_pc","_romwbw_set_debug","_romwbw_autostart","_malloc","_free"]' \
           -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS"]' \
@@ -25,11 +26,14 @@ SRCS = cpm_web.cc \
        ../src/qkz80_reg_set.cc \
        ../src/qkz80_errors.cc
 
+# qkz80 sources from cpmemu project (for WebAssembly build)
+QKZ80_SRC = /home/wohl2/src/cpmemu/src
+
 ROMWBW_SRCS = romwbw_web.cc \
-              ../src/qkz80.cc \
-              ../src/qkz80_mem.cc \
-              ../src/qkz80_reg_set.cc \
-              ../src/qkz80_errors.cc \
+              $(QKZ80_SRC)/qkz80.cc \
+              $(QKZ80_SRC)/qkz80_mem.cc \
+              $(QKZ80_SRC)/qkz80_reg_set.cc \
+              $(QKZ80_SRC)/qkz80_errors.cc \
               ../src/hbios_dispatch.cc \
               ../src/emu_io_wasm.cc
 
@@ -55,7 +59,7 @@ cpm_cli: $(CLI_SRCS) bios.sys ../cpm22.sys ../drivea.img
 
 # RomWBW WebAssembly build
 romwbw.js: $(ROMWBW_SRCS)
-	$(EMCC) $(CFLAGS) $(ROMWBW_LDFLAGS) -o romwbw.js $(ROMWBW_SRCS)
+	$(EMCC) $(ROMWBW_CFLAGS) $(ROMWBW_LDFLAGS) -o romwbw.js $(ROMWBW_SRCS)
 
 # RomWBW with preloaded ROM (optional - requires SBC_simh_std.rom)
 romwbw-bundled.js: $(ROMWBW_SRCS) ../SBC_simh_std.rom
