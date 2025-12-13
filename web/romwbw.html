@@ -470,10 +470,27 @@
     });
 
     // Start button
-    startBtn.addEventListener('click', function() {
+    startBtn.addEventListener('click', async function() {
+      startBtn.disabled = true;
       term.clear();
       term.writeln('RomWBW Emulator - WebAssembly Edition');
       term.writeln('');
+
+      // Auto-load default ROM if none loaded
+      if (!romLoaded) {
+        const defaultRom = 'SBC_simh_std.rom';
+        statusDiv.textContent = 'Loading default ROM...';
+        try {
+          const response = await fetch(defaultRom);
+          const buf = await response.arrayBuffer();
+          loadRomData(new Uint8Array(buf), defaultRom);
+          document.getElementById('romSelect').value = defaultRom;
+        } catch (err) {
+          statusDiv.textContent = 'Error loading ROM: ' + err;
+          startBtn.disabled = false;
+          return;
+        }
+      }
 
       // Set boot string if provided
       const bootStr = document.getElementById('bootString').value.trim();
@@ -491,7 +508,6 @@
       }
 
       Module._romwbw_start();
-      startBtn.disabled = true;
       stopBtn.disabled = false;
       term.focus();
     });
