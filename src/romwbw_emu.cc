@@ -1,20 +1,16 @@
 /*
- * Altair 8800 Emulator with CP/M 2.2 and RomWBW Support
+ * RomWBW Emulator
  *
- * This emulator operates at the hardware level for BASIC, and at the
- * BIOS level for CP/M. Supports:
- * - 88-2SIO serial ports (ports 0x00-0x01 or 0x10-0x11)
- * - Sense switches (port 0xFF) for memory size configuration
- * - CP/M 2.2 with BIOS trapping at F600
- * - RomWBW with banked memory (512KB ROM + 512KB RAM)
+ * Emulates RomWBW with banked memory (512KB ROM + 512KB RAM).
+ * HBIOS calls are handled by the emulator, allowing RomWBW to boot
+ * CP/M, ZSDOS, and other operating systems.
  *
- * CP/M mode: Loads cpm22.sys at E000 and traps BIOS calls at F600-F630
- * RomWBW mode: Loads ROM image, enables banking, runs HBIOS natively
+ * Console escape: Ctrl+E (configurable)
  */
 
 // Version info
-#define EMU_VERSION "1.1.0"
-#define EMU_VERSION_DATE "2025-12-11"
+#define EMU_VERSION "2.0.0"
+#define EMU_VERSION_DATE "2025-12-13"
 
 #include "qkz80.h"
 #include "romwbw_mem.h"
@@ -126,33 +122,6 @@ static void deliver_nmi(qkz80& cpu) {
   // Jump to NMI vector
   cpu.regs.PC.set_pair16(0x0066);
 }
-
-// CP/M constants
-constexpr uint16_t CPM_LOAD_ADDR = 0xE000;   // Where CP/M CCP/BDOS loads
-constexpr uint16_t BIOS_BASE = 0xF600;       // BIOS entry points
-constexpr uint16_t TPA_START = 0x0100;       // Transient Program Area
-constexpr uint16_t DMA_DEFAULT = 0x0080;     // Default DMA address
-
-// BIOS entry point offsets (relative to BIOS_BASE)
-enum BiosEntry {
-  BIOS_BOOT    = 0x00,  // Cold boot
-  BIOS_WBOOT   = 0x03,  // Warm boot
-  BIOS_CONST   = 0x06,  // Console status
-  BIOS_CONIN   = 0x09,  // Console input
-  BIOS_CONOUT  = 0x0C,  // Console output
-  BIOS_LIST    = 0x0F,  // List (printer) output
-  BIOS_PUNCH   = 0x12,  // Punch output
-  BIOS_READER  = 0x15,  // Reader input
-  BIOS_HOME    = 0x18,  // Home disk
-  BIOS_SELDSK  = 0x1B,  // Select disk
-  BIOS_SETTRK  = 0x1E,  // Set track
-  BIOS_SETSEC  = 0x21,  // Set sector
-  BIOS_SETDMA  = 0x24,  // Set DMA address
-  BIOS_READ    = 0x27,  // Read sector
-  BIOS_WRITE   = 0x2A,  // Write sector
-  BIOS_PRSTAT  = 0x2D,  // Printer status
-  BIOS_SECTRN  = 0x30,  // Sector translate
-};
 
 // RomWBW HBIOS constants
 constexpr uint16_t HBIOS_BASE = 0xFE00;      // Fake HBIOS entry point
@@ -882,113 +851,11 @@ static ConsoleResult handle_console_mode(qkz80* cpu, cpm_mem* memory) {
   }
 }
 
-// CP/M Disk Parameter Block (DPB) for standard 8" SSSD
-// 77 tracks, 26 sectors/track, 128 bytes/sector, 1024 bytes/block
-// Reserved tracks: 2 (for system), directory entries: 64
-// IMPORTANT: These must be placed AFTER the BIOS code (F633+) to not
-// overwrite BDOS code which extends up to ~F5EC.
-constexpr uint16_t DPB_ADDR = 0xF700;  // Location of DPB in memory
-constexpr uint16_t DIRBUF_ADDR = 0xF720;  // 128-byte directory buffer
-constexpr uint16_t ALV_ADDR = 0xF7A0;  // Allocation vector (32 bytes for 243 blocks)
-constexpr uint16_t CSV_ADDR = 0xF7C0;  // Checksum vector (16 bytes)
-constexpr uint16_t DPH_BASE = 0xF7E0;  // DPH for each disk (16 bytes each)
-
-// CP/M Disk simulation using Linux filesystem
-class CPMDisk {
-public:
-  std::string directory;  // Host directory for this drive
-  bool selected = false;
-  bool valid = false;
-
-  // Disk geometry (standard 8" SSSD)
-  static constexpr int SECTORS_PER_TRACK = 26;
-  static constexpr int TRACKS = 77;
-  static constexpr int SECTOR_SIZE = 128;
-  static constexpr int BLOCK_SIZE = 1024;
-  static constexpr int DIR_ENTRIES = 64;
-  static constexpr int RESERVED_TRACKS = 2;  // System tracks
-
-  // Disk Parameter Header (DPH) - returned by SELDSK
-  // Points to: XLT, 0000, 0000, 0000, DIRBUF, DPB, CSV, ALV
-  uint16_t dph_addr = 0;  // Address of DPH in CP/M memory
-
-  CPMDisk() = default;
-
-  bool open(const std::string& dir) {
-    directory = dir;
-    struct stat st;
-    valid = (stat(dir.c_str(), &st) == 0 && S_ISDIR(st.st_mode));
-    return valid;
-  }
-
-  // Initialize disk structures in CP/M memory
-  static void init_disk_tables(char* mem) {
-    // DPB - Disk Parameter Block (15 bytes)
-    // Format: SPT, BSH, BLM, EXM, DSM, DRM, AL0, AL1, CKS, OFF
-    uint16_t dpb = DPB_ADDR;
-    mem[dpb + 0] = 26;      // SPT - sectors per track (low)
-    mem[dpb + 1] = 0;       // SPT - sectors per track (high)
-    mem[dpb + 2] = 3;       // BSH - block shift (1024 byte blocks = 2^(7+3) = 1024)
-    mem[dpb + 3] = 7;       // BLM - block mask (2^3 - 1 = 7)
-    mem[dpb + 4] = 0;       // EXM - extent mask (for 1K blocks = 0)
-    mem[dpb + 5] = 242;     // DSM - max block number (low) ((77-2)*26*128/1024 - 1 = 242)
-    mem[dpb + 6] = 0;       // DSM - max block number (high)
-    mem[dpb + 7] = 63;      // DRM - max directory entry (low) (64 entries - 1)
-    mem[dpb + 8] = 0;       // DRM - max directory entry (high)
-    mem[dpb + 9] = 0xC0;    // AL0 - directory allocation bitmap
-    mem[dpb + 10] = 0;      // AL1
-    mem[dpb + 11] = 16;     // CKS - checksum vector size (low) (DRM/4 = 16)
-    mem[dpb + 12] = 0;      // CKS - checksum vector size (high)
-    mem[dpb + 13] = 2;      // OFF - reserved tracks (low)
-    mem[dpb + 14] = 0;      // OFF - reserved tracks (high)
-
-    // Initialize directory buffer to E5 (empty)
-    for (int i = 0; i < 128; i++) {
-      mem[DIRBUF_ADDR + i] = 0xE5;
-    }
-
-    // Initialize allocation vector to 0
-    for (int i = 0; i < 32; i++) {
-      mem[ALV_ADDR + i] = 0;
-    }
-
-    // Initialize checksum vector to 0
-    for (int i = 0; i < 16; i++) {
-      mem[CSV_ADDR + i] = 0;
-    }
-
-    // Initialize DPH for each potential drive (16 drives max)
-    for (int d = 0; d < 16; d++) {
-      uint16_t dph = DPH_BASE + (d * 16);
-      // XLT - no translation table (sectors 1:1)
-      mem[dph + 0] = 0;
-      mem[dph + 1] = 0;
-      // Scratch areas (3 x 16-bit = 6 bytes)
-      mem[dph + 2] = 0; mem[dph + 3] = 0;
-      mem[dph + 4] = 0; mem[dph + 5] = 0;
-      mem[dph + 6] = 0; mem[dph + 7] = 0;
-      // DIRBUF pointer
-      mem[dph + 8] = DIRBUF_ADDR & 0xFF;
-      mem[dph + 9] = (DIRBUF_ADDR >> 8) & 0xFF;
-      // DPB pointer
-      mem[dph + 10] = DPB_ADDR & 0xFF;
-      mem[dph + 11] = (DPB_ADDR >> 8) & 0xFF;
-      // CSV pointer (each drive could have separate, but we share for now)
-      mem[dph + 12] = CSV_ADDR & 0xFF;
-      mem[dph + 13] = (CSV_ADDR >> 8) & 0xFF;
-      // ALV pointer (each drive should have separate, but we share for now)
-      mem[dph + 14] = ALV_ADDR & 0xFF;
-      mem[dph + 15] = (ALV_ADDR >> 8) & 0xFF;
-    }
-  }
-};
-
 class AltairEmulator {
 private:
   qkz80* cpu;
   cpm_mem* memory;
   bool debug;
-  bool cpm_mode;
   bool romwbw_mode;
   bool strict_io_mode;  // Halt on unexpected I/O ports
   bool halted;          // Set when halted due to unexpected I/O
@@ -1012,17 +879,7 @@ private:
   // Debug: trace instructions after CIOIN
   int cioin_trace_count = 0;
 
-  // CP/M BIOS state
-  CPMDisk disks[16];      // A: through P:
-  int current_disk = 0;   // Currently selected disk
-  int current_track = 0;  // Current track
-  int current_sector = 0; // Current sector
-  uint16_t dma_addr = DMA_DEFAULT;  // DMA address
-
-  // Directory buffer in CP/M memory (at DIRBUF location)
-  uint16_t dirbuf_addr = 0x0080;  // Temporary, will be set properly
-
-  // HBIOS disk state (for RomWBW mode)
+  // HBIOS disk state
   struct HBDiskState {
     uint32_t current_lba;  // Current LBA position
     FILE* image_file;      // Disk image file handle
@@ -1092,8 +949,8 @@ private:
   int simh_rtc_idx = 0;            // Index into buffer for reads
 
 public:
-  AltairEmulator(qkz80* acpu, cpm_mem* amem, bool adebug = false, bool acpm = false, bool aromwbw = false)
-    : cpu(acpu), memory(amem), debug(adebug), cpm_mode(acpm), romwbw_mode(aromwbw),
+  AltairEmulator(qkz80* acpu, cpm_mem* amem, bool adebug = false, bool aromwbw = false)
+    : cpu(acpu), memory(amem), debug(adebug), romwbw_mode(aromwbw),
       strict_io_mode(false), halted(false),
       sio_status_a(0x02), sio_status_b(0x02),
       input_char(-1),
@@ -1104,9 +961,6 @@ public:
   void set_strict_io_mode(bool mode) { strict_io_mode = mode; }
   bool is_strict_io_mode() const { return strict_io_mode; }
   bool is_halted() const { return halted; }
-
-  void set_cpm_mode(bool mode) { cpm_mode = mode; }
-  bool is_cpm_mode() const { return cpm_mode; }
 
   void set_romwbw_mode(bool mode) { romwbw_mode = mode; }
   bool is_romwbw_mode() const { return romwbw_mode; }
@@ -1315,17 +1169,6 @@ public:
     return -1;
   }
 
-  void set_disk_directory(int drive, const std::string& dir) {
-    if (drive >= 0 && drive < 16) {
-      if (disks[drive].open(dir)) {
-        fprintf(stderr, "Drive %c: -> %s\n", 'A' + drive, dir.c_str());
-      } else {
-        fprintf(stderr, "Warning: Cannot open directory for drive %c: %s\n",
-                'A' + drive, dir.c_str());
-      }
-    }
-  }
-
   void set_sense_switches(uint8_t val) {
     sense_switches = val;
     if (debug) fprintf(stderr, "Sense switches set to: 0x%02X\n", sense_switches);
@@ -1529,341 +1372,7 @@ public:
     }
   }
 
-  // Handle BIOS call - called when PC is in BIOS range
-  // Returns true if handled, false to continue normal execution
-  bool handle_bios_call(uint16_t pc) {
-    uint16_t offset = pc - BIOS_BASE;
-    char* mem = cpu->get_mem();
-
-    if (debug) {
-      fprintf(stderr, "[BIOS call at 0x%04X, offset 0x%02X]\n", pc, offset);
-    }
-
-    switch (offset) {
-      case BIOS_BOOT: {
-        // Cold boot - initialize system
-        if (debug) fprintf(stderr, "[BIOS BOOT - Cold boot]\n");
-
-        // Initialize disk tables (DPH, DPB, buffers)
-        CPMDisk::init_disk_tables(mem);
-
-        // Set up page zero
-        mem[0x0000] = 0xC3;  // JMP WBOOT
-        mem[0x0001] = (BIOS_BASE + BIOS_WBOOT) & 0xFF;
-        mem[0x0002] = (BIOS_BASE + BIOS_WBOOT) >> 8;
-        mem[0x0003] = 0x00;  // IOBYTE
-        mem[0x0004] = 0x00;  // Current drive/user
-        mem[0x0005] = 0xC3;  // JMP BDOS
-        // BDOS entry is at FBASE (E806 from sym file)
-        mem[0x0006] = 0x06;
-        mem[0x0007] = 0xE8;
-
-        // CRITICAL: Set BDOS ACTIVE variable to 0xFF (invalid disk)
-        // so that the first SETDSK call from CCP actually runs LOGINDRV
-        // which calls SELDSK to initialize disk parameters.
-        // ACTIVE is at EB42 (from symbol file)
-        mem[0xEB42] = 0xFF;
-
-        // Set default DMA
-        dma_addr = DMA_DEFAULT;
-        // Select disk A
-        current_disk = 0;
-        current_track = 0;
-        current_sector = 1;
-        // Print signon message
-        fprintf(stderr, "\n[CP/M 2.2 Emulator - BIOS Cold Boot]\n");
-
-        // CCP expects BC = (user << 4) | drive
-        // Set BC = 0 for user 0, drive A
-        cpu->regs.BC.set_pair16(0x0000);
-
-        // Jump to CCP (E000) - not CBASE+3, that's for warm boot
-        cpu->regs.PC.set_pair16(CPM_LOAD_ADDR);
-        return true;
-      }
-
-      case BIOS_WBOOT: {
-        // Warm boot - reload CCP/BDOS and jump to CCP
-        if (debug) fprintf(stderr, "[BIOS WBOOT - Warm boot]\n");
-        // Reload page zero (same as cold boot minus initialization)
-        mem[0x0000] = 0xC3;  // JMP WBOOT
-        mem[0x0001] = (BIOS_BASE + BIOS_WBOOT) & 0xFF;
-        mem[0x0002] = (BIOS_BASE + BIOS_WBOOT) >> 8;
-        // Preserve IOBYTE and current drive/user
-        mem[0x0005] = 0xC3;  // JMP BDOS
-        mem[0x0006] = 0x06;
-        mem[0x0007] = 0xE8;
-        // Set default DMA
-        dma_addr = DMA_DEFAULT;
-        // Jump to CCP + 3 (warm boot entry)
-        cpu->regs.PC.set_pair16(CPM_LOAD_ADDR + 3);
-        return true;
-      }
-
-      case BIOS_CONST: {
-        // Console status - return A=0xFF if ready, A=0 if not
-        bool ready = (input_char >= 0 || stdin_has_data());
-        cpu->set_reg8(ready ? 0xFF : 0x00, qkz80::reg_A);
-        // Return from BIOS call
-        do_ret();
-        return true;
-      }
-
-      case BIOS_CONIN: {
-        // Console input - wait for character, return in A
-        int ch;
-        if (input_char >= 0) {
-          ch = input_char;
-          input_char = -1;
-        } else if (peek_char >= 0) {
-          // Use peeked character from stdin_has_data()
-          ch = peek_char;
-          peek_char = -1;
-        } else {
-          // Blocking wait for input
-          while (!stdin_has_data()) {
-            if (stdin_eof) {
-              // EOF reached during wait - exit for pipe input
-              if (!isatty(STDIN_FILENO)) {
-                exit(0);
-              }
-              // For TTY, return ^Z
-              ch = 0x1A;
-              cpu->set_reg8(ch & 0x7F, qkz80::reg_A);
-              do_ret();
-              return true;
-            }
-            usleep(1000);  // 1ms delay
-          }
-          // stdin_has_data() returned true, so peek_char is set
-          ch = peek_char;
-          peek_char = -1;
-          if (check_ctrl_c_exit(ch)) {
-            
-          }
-          if (ch == '\n') ch = '\r';
-        }
-        cpu->set_reg8(ch & 0x7F, qkz80::reg_A);
-        do_ret();
-        return true;
-      }
-
-      case BIOS_CONOUT: {
-        // Console output - print character in C
-        uint8_t ch = cpu->get_reg8(qkz80::reg_C);
-        emu_console_write_char(ch);
-        do_ret();
-        return true;
-      }
-
-      case BIOS_LIST: {
-        // List output (printer) - print char in C
-        uint8_t ch = cpu->get_reg8(qkz80::reg_C);
-        emu_printer_out(ch);
-        do_ret();
-        return true;
-      }
-
-      case BIOS_PUNCH: {
-        // Punch output - send to aux output
-        uint8_t ch = cpu->get_reg8(qkz80::reg_C);
-        emu_aux_out(ch);
-        do_ret();
-        return true;
-      }
-
-      case BIOS_READER: {
-        // Reader input - get from aux input
-        int ch = emu_aux_in();
-        cpu->set_reg8(ch & 0x7F, qkz80::reg_A);
-        do_ret();
-        return true;
-      }
-
-      case BIOS_HOME: {
-        // Home disk - seek to track 0
-        current_track = 0;
-        do_ret();
-        return true;
-      }
-
-      case BIOS_SELDSK: {
-        // Select disk - C=disk number (0=A, 1=B, etc.)
-        // Return HL=DPH address or HL=0 if invalid
-        uint8_t disk = cpu->get_reg8(qkz80::reg_C);
-        if (debug) fprintf(stderr, "[BIOS SELDSK: disk %c]\n", 'A' + disk);
-
-        if (disk < 16 && disks[disk].valid) {
-          current_disk = disk;
-          // Return pointer to DPH (properly initialized in BOOT)
-          uint16_t dph = DPH_BASE + (disk * 16);
-          cpu->regs.HL.set_pair16(dph);
-        } else {
-          // Invalid disk
-          cpu->regs.HL.set_pair16(0x0000);
-        }
-        do_ret();
-        return true;
-      }
-
-      case BIOS_SETTRK: {
-        // Set track - BC=track number
-        current_track = cpu->regs.BC.get_pair16();
-        if (debug) fprintf(stderr, "[BIOS SETTRK: track %d]\n", current_track);
-        do_ret();
-        return true;
-      }
-
-      case BIOS_SETSEC: {
-        // Set sector - BC=sector number
-        current_sector = cpu->regs.BC.get_pair16();
-        if (debug) fprintf(stderr, "[BIOS SETSEC: sector %d]\n", current_sector);
-        do_ret();
-        return true;
-      }
-
-      case BIOS_SETDMA: {
-        // Set DMA address - BC=address
-        dma_addr = cpu->regs.BC.get_pair16();
-        if (debug) fprintf(stderr, "[BIOS SETDMA: 0x%04X]\n", dma_addr);
-        do_ret();
-        return true;
-      }
-
-      case BIOS_READ: {
-        // Read sector - return A=0 if OK, A=1 if error
-        if (debug) {
-          fprintf(stderr, "[BIOS READ: disk %c, track %d, sector %d, DMA 0x%04X]\n",
-                  'A' + current_disk, current_track, current_sector, dma_addr);
-        }
-
-        int result = do_disk_read();
-        cpu->set_reg8(result, qkz80::reg_A);
-        do_ret();
-        return true;
-      }
-
-      case BIOS_WRITE: {
-        // Write sector - C=write type, return A=0 if OK
-        uint8_t write_type = cpu->get_reg8(qkz80::reg_C);
-        if (debug) {
-          fprintf(stderr, "[BIOS WRITE: disk %c, track %d, sector %d, DMA 0x%04X, type %d]\n",
-                  'A' + current_disk, current_track, current_sector, dma_addr, write_type);
-        }
-
-        int result = do_disk_write();
-        cpu->set_reg8(result, qkz80::reg_A);
-        do_ret();
-        return true;
-      }
-
-      case BIOS_PRSTAT: {
-        // Printer status - return A=0 if not ready, A=0xFF if ready
-        cpu->set_reg8(0xFF, qkz80::reg_A);  // Always ready
-        do_ret();
-        return true;
-      }
-
-      case BIOS_SECTRN: {
-        // Sector translate - BC=logical sector (0-based), DE=translate table
-        // Return HL=physical sector
-        // For IBM 8" SSSD format, physical sectors are 1-based (1-26)
-        // With no skew table (XLT=0), simply convert 0-based to 1-based
-        uint16_t logical = cpu->regs.BC.get_pair16();
-        uint16_t de = cpu->regs.DE.get_pair16();
-        uint16_t physical;
-        if (de == 0) {
-          // No translation table - just add 1 to convert to 1-based physical
-          physical = logical + 1;
-        } else {
-          // Use translation table - read physical sector from table
-          char* mem = cpu->get_mem();
-          physical = (uint8_t)mem[de + logical];
-        }
-        if (debug) fprintf(stderr, "[BIOS SECTRN: logical %d -> physical %d]\n", logical, physical);
-        cpu->regs.HL.set_pair16(physical);
-        do_ret();
-        return true;
-      }
-
-      default:
-        fprintf(stderr, "[ERROR: Unknown BIOS call at 0x%04X, offset 0x%02X]\n",
-                pc, offset);
-        return false;
-    }
-  }
-
 private:
-  // Execute RET instruction to return from BIOS call
-  void do_ret() {
-    char* mem = cpu->get_mem();
-    uint16_t sp = cpu->regs.SP.get_pair16();
-    uint16_t ret_addr = (uint8_t)mem[sp] | ((uint8_t)mem[sp + 1] << 8);
-    cpu->regs.SP.set_pair16(sp + 2);
-    cpu->regs.PC.set_pair16(ret_addr);
-  }
-
-  // Read a sector from the disk image
-  int do_disk_read() {
-    if (current_disk < 0 || current_disk >= 16 || !disks[current_disk].valid) {
-      return 1;  // Error
-    }
-
-    // Calculate file offset: (track * 26 + (sector - 1)) * 128
-    // Sector numbers are 1-based in CP/M
-    long offset = ((long)current_track * CPMDisk::SECTORS_PER_TRACK +
-                   (current_sector - 1)) * CPMDisk::SECTOR_SIZE;
-
-    // Build filename: directory/diskimage.img or use raw sectors
-    std::string img_path = disks[current_disk].directory + "/disk.img";
-    FILE* f = fopen(img_path.c_str(), "rb");
-    if (!f) {
-      // No disk image - return zeros
-      char* mem = cpu->get_mem();
-      memset(&mem[dma_addr], 0xE5, CPMDisk::SECTOR_SIZE);
-      return 0;
-    }
-
-    fseek(f, offset, SEEK_SET);
-    char* mem = cpu->get_mem();
-    size_t read = fread(&mem[dma_addr], 1, CPMDisk::SECTOR_SIZE, f);
-    fclose(f);
-
-    if (read < CPMDisk::SECTOR_SIZE) {
-      // Pad with E5 (empty directory entry marker)
-      memset(&mem[dma_addr + read], 0xE5, CPMDisk::SECTOR_SIZE - read);
-    }
-
-    return 0;  // Success
-  }
-
-  // Write a sector to the disk image
-  int do_disk_write() {
-    if (current_disk < 0 || current_disk >= 16 || !disks[current_disk].valid) {
-      return 1;  // Error
-    }
-
-    long offset = ((long)current_track * CPMDisk::SECTORS_PER_TRACK +
-                   (current_sector - 1)) * CPMDisk::SECTOR_SIZE;
-
-    std::string img_path = disks[current_disk].directory + "/disk.img";
-    FILE* f = fopen(img_path.c_str(), "r+b");
-    if (!f) {
-      // Create the file
-      f = fopen(img_path.c_str(), "wb");
-      if (!f) {
-        return 1;  // Error
-      }
-    }
-
-    fseek(f, offset, SEEK_SET);
-    char* mem = cpu->get_mem();
-    fwrite(&mem[dma_addr], 1, CPMDisk::SECTOR_SIZE, f);
-    fclose(f);
-
-    return 0;  // Success
-  }
-
   // Convert value to BCD
   uint8_t to_bcd(int val) {
     return ((val / 10) << 4) | (val % 10);
@@ -3761,47 +3270,30 @@ public:
 };
 
 void print_usage(const char* prog) {
-  fprintf(stderr, "Usage: %s [options] <binary.bin|cpm22.sys|romwbw.rom>\n", prog);
+  fprintf(stderr, "RomWBW Emulator v%s (%s)\n", EMU_VERSION, EMU_VERSION_DATE);
+  fprintf(stderr, "Usage: %s --romwbw <rom.rom> [options]\n", prog);
   fprintf(stderr, "\n");
   fprintf(stderr, "Options:\n");
   fprintf(stderr, "  --version, -v     Show version information\n");
-  fprintf(stderr, "  --cpm             Enable CP/M mode (load at 0xE000, trap BIOS)\n");
   fprintf(stderr, "  --romwbw          Enable RomWBW mode (512KB ROM+RAM, Z80, bank switching)\n");
-  fprintf(stderr, "  --strict-io       Halt on unexpected I/O ports (for RomWBW debugging)\n");
+  fprintf(stderr, "  --strict-io       Halt on unexpected I/O ports (for debugging)\n");
   fprintf(stderr, "  --debug           Enable debug output\n");
-  fprintf(stderr, "  --load=0xNNNN     Load address (default: 0x0000, or 0xE000 for --cpm)\n");
-  fprintf(stderr, "  --start=0xNNNN    Start address (default: load address)\n");
-  fprintf(stderr, "  --disk-a=DIR      Set drive A: directory (CP/M mode)\n");
-  fprintf(stderr, "  --disk-b=DIR      Set drive B: directory (CP/M mode)\n");
-  fprintf(stderr, "  --hbdiskN=FILE    Attach disk image N (0-15) for RomWBW/HBIOS mode\n");
-  fprintf(stderr, "  --romapp=K:FILE   Register ROM app with boot key K (C, Z, Q, etc.)\n");
-  fprintf(stderr, "                    Example: --romapp=C:cpm_wbw.sys --romapp=Z:zsys_wbw.sys\n");
-  fprintf(stderr, "  --romldr=FILE     Use RomWBW romldr boot menu (FILE can be .rom or .bin)\n");
-  fprintf(stderr, "                    Example: --romldr=SBC_std.rom (uses bank 1 from ROM)\n");
-  fprintf(stderr, "  --boot=STRING     Auto-boot string (e.g., 'HD0:0' or '0' or 'C')\n");
-  fprintf(stderr, "                    Automatically entered at boot prompt (adds CR)\n");
-  fprintf(stderr, "  --sense=0xNN      Set sense switch value\n");
-  fprintf(stderr, "  --trace=FILE      Write execution trace to FILE (for ud80 disassembly)\n");
+  fprintf(stderr, "  --hbdisk0=FILE    Attach disk image for HBIOS disk unit 0\n");
+  fprintf(stderr, "  --hbdisk1=FILE    Attach disk image for HBIOS disk unit 1\n");
+  fprintf(stderr, "  --boot=STRING     Auto-boot string (e.g., '0' or 'C' for CP/M)\n");
+  fprintf(stderr, "                    Automatically entered at boot prompt\n");
+  fprintf(stderr, "  --escape=CHAR     Console escape char (default ^E)\n");
+  fprintf(stderr, "  --trace=FILE      Write execution trace to FILE\n");
   fprintf(stderr, "  --symbols=FILE    Load symbol table from FILE (.sym)\n");
-  fprintf(stderr, "  --escape=CHAR     Console escape char (default ^E, e.g. --escape=^]\\ )\n");
-  fprintf(stderr, "  --mask-interrupt <range> <rst|call> <n>\n");
-  fprintf(stderr, "                    Schedule maskable interrupts (respects DI/EI)\n");
-  fprintf(stderr, "                    Range: min-max cycles (random in range)\n");
-  fprintf(stderr, "                    Examples: --mask-interrupt 4000-4500 rst 7\n");
-  fprintf(stderr, "                              --mask-interrupt 5000 call 0x0100\n");
-  fprintf(stderr, "  --nmi <range>     Schedule NMI every range cycles (jumps to 0x0066)\n");
-  fprintf(stderr, "                    Example: --nmi 10000-12000\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Console mode:\n");
   fprintf(stderr, "  Press the escape char (default Ctrl+E) to enter console mode.\n");
   fprintf(stderr, "  Type 'help' in console mode for available commands.\n");
-  fprintf(stderr, "  Use 'quit' to exit and write trace file.\n");
+  fprintf(stderr, "  Use 'quit' to exit.\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Examples:\n");
-  fprintf(stderr, "  %s --cpm cpm22.sys --disk-a=./drivea\n", prog);
-  fprintf(stderr, "  %s 4kbas40.bin --trace=trace.txt\n", prog);
-  fprintf(stderr, "  %s 4kbas40.bin --symbols=4kbas.sym\n", prog);
-  fprintf(stderr, "  %s --romwbw ~/esrc/RomWBW/Binary/SBC_std.rom\n", prog);
+  fprintf(stderr, "  %s --romwbw SBC_simh_std.rom\n", prog);
+  fprintf(stderr, "  %s --romwbw SBC_simh_std.rom --hbdisk0=cpm_wbw.img --boot=0\n", prog);
 }
 
 int main(int argc, char** argv) {
@@ -3814,14 +3306,11 @@ int main(int argc, char** argv) {
   const char* binary = nullptr;
   uint16_t load_addr = 0x0000;
   uint16_t start_addr = 0x0000;
-  bool load_addr_set = false;
   bool start_addr_set = false;
   bool debug = false;
-  bool cpm_mode = false;
   bool romwbw_mode = false;
   bool strict_io_mode = false;
   int sense = -1;
-  std::string disk_dirs[16];
   std::string hbios_disks[16];  // For RomWBW disk images
   std::string trace_file;
   std::string symbols_file;
@@ -3837,16 +3326,14 @@ int main(int argc, char** argv) {
 
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-v") == 0) {
-      fprintf(stderr, "altair_emu version %s (%s)\n", EMU_VERSION, EMU_VERSION_DATE);
-      fprintf(stderr, "RomWBW HBIOS emulation with memory disk support\n");
+      fprintf(stderr, "RomWBW Emulator v%s (%s)\n", EMU_VERSION, EMU_VERSION_DATE);
+      fprintf(stderr, "Emulates RomWBW with HBIOS, boots CP/M/ZSDOS from ROM disk\n");
       return 0;
     } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
       print_usage(argv[0]);
       return 0;
     } else if (strcmp(argv[i], "--debug") == 0) {
       debug = true;
-    } else if (strcmp(argv[i], "--cpm") == 0) {
-      cpm_mode = true;
     } else if (strcmp(argv[i], "--romwbw") == 0) {
       romwbw_mode = true;
     } else if (strcmp(argv[i], "--strict-io") == 0) {
@@ -3855,18 +3342,9 @@ int main(int argc, char** argv) {
       sense = strtol(argv[i] + 8, nullptr, 0);
     } else if (strncmp(argv[i], "--load=", 7) == 0) {
       load_addr = strtol(argv[i] + 7, nullptr, 0);
-      load_addr_set = true;
     } else if (strncmp(argv[i], "--start=", 8) == 0) {
       start_addr = strtol(argv[i] + 8, nullptr, 0);
       start_addr_set = true;
-    } else if (strncmp(argv[i], "--disk-a=", 9) == 0) {
-      disk_dirs[0] = argv[i] + 9;
-    } else if (strncmp(argv[i], "--disk-b=", 9) == 0) {
-      disk_dirs[1] = argv[i] + 9;
-    } else if (strncmp(argv[i], "--disk-c=", 9) == 0) {
-      disk_dirs[2] = argv[i] + 9;
-    } else if (strncmp(argv[i], "--disk-d=", 9) == 0) {
-      disk_dirs[3] = argv[i] + 9;
     } else if (strncmp(argv[i], "--hbdisk", 8) == 0) {
       // Parse --hbdisk0=file, --hbdisk1=file, etc.
       const char* opt = argv[i] + 8;
@@ -4035,10 +3513,7 @@ int main(int argc, char** argv) {
   }
 
   // Set defaults based on mode
-  if (cpm_mode) {
-    if (!load_addr_set) load_addr = CPM_LOAD_ADDR;
-    if (!start_addr_set) start_addr = BIOS_BASE;  // Start at BIOS BOOT
-  } else if (romwbw_mode) {
+  if (romwbw_mode) {
     // RomWBW starts at address 0x0000 in ROM bank 0
     if (!start_addr_set) start_addr = 0x0000;
   } else {
@@ -4068,17 +3543,10 @@ int main(int argc, char** argv) {
   }
 
   // Create emulator
-  AltairEmulator emu(&cpu, &memory, debug, cpm_mode, romwbw_mode);
+  AltairEmulator emu(&cpu, &memory, debug, romwbw_mode);
   emu.set_strict_io_mode(strict_io_mode);
 
-  // Set up disks
-  for (int i = 0; i < 16; i++) {
-    if (!disk_dirs[i].empty()) {
-      emu.set_disk_directory(i, disk_dirs[i]);
-    }
-  }
-
-  // Set up HBIOS disk images (for RomWBW mode)
+  // Set up HBIOS disk images
   // NOTE: Memory disks are initialized later, after ROM is loaded
   if (romwbw_mode) {
     // Attach any file-backed hard disk images
@@ -4118,13 +3586,6 @@ int main(int argc, char** argv) {
             console_escape_char + '@', console_escape_char + '@');
   } else {
     fprintf(stderr, "Console escape: '%c'\n", console_escape_char);
-  }
-
-  // Set up BIOS trap range for CP/M mode
-  if (cpm_mode) {
-    memory.set_bios_range(BIOS_BASE, BIOS_BASE + 0x33);  // 17 * 3 = 51 bytes
-    fprintf(stderr, "CP/M mode: BIOS traps at 0x%04X-0x%04X\n",
-            BIOS_BASE, BIOS_BASE + 0x32);
   }
 
   // Enable raw terminal mode
@@ -4228,9 +3689,7 @@ int main(int argc, char** argv) {
   cpu.regs.PC.set_pair16(start_addr);
 
   // Set SP based on mode
-  if (cpm_mode) {
-    cpu.regs.SP.set_pair16(CPM_LOAD_ADDR);  // E000 - stack grows into TPA
-  } else if (romwbw_mode) {
+  if (romwbw_mode) {
     // RomWBW ROM initializes SP itself, but start with safe value
     cpu.regs.SP.set_pair16(0x0000);  // Will be set by ROM
   } else {
@@ -4305,18 +3764,6 @@ int main(int argc, char** argv) {
         case CONSOLE_AGAIN:
           continue;
       }
-    }
-
-    // Check for BIOS trap in CP/M mode
-    if (cpm_mode && memory.is_bios_trap(pc)) {
-      if (debug) fprintf(stderr, "[BIOS trap check: PC=0x%04X]\n", pc);
-      if (emu.handle_bios_call(pc)) {
-        instruction_count++;
-        if (in_step_mode) step_count--;
-        continue;
-      }
-      // If handle_bios_call returned false, we have an unhandled BIOS call
-      fprintf(stderr, "[ERROR: Unhandled BIOS trap at PC=0x%04X, falling through!]\n", pc);
     }
 
     // Check for HBIOS trap in RomWBW mode
@@ -4404,12 +3851,6 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[TRACE %ld: PC=0x%04X, op=0x%02X]\n", debug_count, pc, opcode);
       }
     }
-    // Debug: check for BIOS-area execution that doesn't get trapped
-    if (debug && pc >= 0xF600 && pc < 0xF633) {
-      fprintf(stderr, "[DEBUG BIOS AREA: PC=0x%04X, opcode=0x%02X, is_trap=%d]\n",
-              pc, opcode, memory.is_bios_trap(pc));
-    }
-
     // Debug: trace instructions after CIOIN
     emu.trace_after_cioin(pc, opcode);
 
