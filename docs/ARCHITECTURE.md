@@ -365,6 +365,46 @@ The current implementation is **not thread-safe**. For platforms requiring threa
 - **Memory access:** Direct array access, no virtual methods
 - **Disk caching:** Keep small disks in memory, large ones file-backed
 
+## ROM Compatibility
+
+### Why Standard ROMs Don't Work
+
+Standard RomWBW ROMs (`*_std.rom`) contain real HBIOS code that attempts to access hardware I/O ports. This emulator does not emulate hardware - instead, it intercepts HBIOS calls and handles them in C++.
+
+When a standard ROM runs:
+1. It immediately tries to access hardware ports (e.g., port 0xC0 for RTC latch)
+2. The emulator returns 0x00 for unknown port reads
+3. HBIOS trapping is never enabled (no signal to port 0xEE)
+4. The Z80 HBIOS code runs and hangs waiting for hardware responses
+
+### EMU ROMs
+
+The `emu_*` ROMs have the first 32KB replaced with `emu_hbios` code that:
+1. Skips all hardware initialization
+2. Signals the emulator via port 0xEE to enable HBIOS interception
+3. Routes all HBIOS calls through dispatch addresses the emulator traps
+
+The rest of the ROM (banks 1-15) is preserved from the original, keeping OS images and ROM disk intact.
+
+### Building EMU ROMs
+
+Use `roms/build_emu_rom.sh` to create an EMU ROM from any standard RomWBW ROM:
+
+```bash
+cd roms
+./build_emu_rom.sh SBC_simh_std.rom emu_romwbw.rom
+./build_emu_rom.sh RCZ80_std.rom emu_rcz80.rom
+```
+
+### ROM Types
+
+| ROM | Description | Works? |
+|-----|-------------|--------|
+| `emu_romwbw.rom` | SBC/SIMH with emu_hbios overlay | Yes |
+| `emu_rcz80.rom` | RCZ80 with emu_hbios overlay | Yes |
+| `SBC_simh_std.rom` | Standard SBC/SIMH ROM | No - requires hardware |
+| `RCZ80_std.rom` | Standard RCZ80 ROM | No - requires hardware |
+
 ## Version Compatibility
 
 The shared HBIOS is designed to work with RomWBW 3.x ROMs. Key compatibility points:
