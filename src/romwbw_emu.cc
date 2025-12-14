@@ -189,61 +189,11 @@ static int raw_read_stdin() {
 static char console_escape_char = 0x05;  // Ctrl+E
 static bool console_mode_requested = false;
 
-// Boot string queue - characters to feed before reading from stdin
-static std::string boot_string;
-static size_t boot_string_pos = 0;
-static bool boot_prompt_seen = false;   // Set when "]: " pattern detected
-static bool flush_completed = false;    // Set when flush timeout is reached
-static bool boot_string_ready = false;  // Only true when both above are true
-static int cioist_zero_count = 0;       // Count consecutive CIOIST returns of 0
-
-// Track recent output to detect boot prompt "Boot [H=Help]: "
-static char recent_output[20] = {0};
-static int recent_output_pos = 0;
-
-static void track_output_for_boot_prompt(char ch) {
-  // Shift buffer and add new character
-  if (recent_output_pos < 19) {
-    recent_output[recent_output_pos++] = ch;
-  } else {
-    memmove(recent_output, recent_output + 1, 18);
-    recent_output[18] = ch;
-  }
-  recent_output[recent_output_pos] = '\0';
-
-  // Check if we see "]: " at the end (part of "[H=Help]: ")
-  if (!boot_prompt_seen && recent_output_pos >= 3 &&
-      recent_output[recent_output_pos-3] == ']' &&
-      recent_output[recent_output_pos-2] == ':' &&
-      recent_output[recent_output_pos-1] == ' ') {
-    boot_prompt_seen = true;
-  }
-}
-
-// Called when CIOIST returns 0 (no input available)
-static void check_boot_string_activation() {
-  if (!boot_string_ready && boot_prompt_seen) {
-    cioist_zero_count++;
-    // The flush routine at 0x826C needs multiple CIOIST=0 returns before it times out.
-    // Looking at the timeout limit at (0x8F17)=0x01, it needs ~3 iterations with
-    // units 0, 1, then timeout. Wait for a few more to be safe.
-    // After the flush, the main menu loop at 0x8255 will call CIOIST with the
-    // console unit - that's when we should activate.
-    if (cioist_zero_count >= 5) {  // Wait for flush to fully timeout
-      flush_completed = true;
-      boot_string_ready = true;
-    }
-  }
-}
-
 // Forward declaration
 static bool check_ctrl_c_exit(int ch);
 
 // Check if input is available (not just EOF) by peeking
 static bool stdin_has_data() {
-  // Check boot string first (only if boot prompt has been shown)
-  if (boot_string_ready && boot_string_pos < boot_string.size()) return true;
-
   if (stdin_eof) return false;  // Already at EOF
   if (peek_char >= 0) return true;  // We have a peeked char
 
@@ -1632,11 +1582,8 @@ public:
       case HBF_CIOIN: {  // Console input
         // Retry loop for ^C handling - if ^C is consumed, keep waiting for input
         for (;;) {
-          // Check if boot_string is available (only on unit 0xFF)
-          bool boot_string_available = (unit == 0xFF) && boot_string_ready &&
-                                       boot_string_pos < boot_string.size();
-          // Wait for character from stdin (any unit) or boot_string (unit 0xFF only)
-          while (input_char < 0 && peek_char < 0 && !boot_string_available && !stdin_eof) {
+          // Wait for character from stdin
+          while (input_char < 0 && peek_char < 0 && !stdin_eof) {
             // Quick check for stdin
             fd_set readfds;
             struct timeval tv;
@@ -1657,22 +1604,15 @@ public:
                 }
                 // Check for ^C exit - consume ^C chars, don't pass to program
                 if (check_ctrl_c_exit(ch)) {
-                  
                   continue;  // ^C was counted for exit, don't pass to program
                 }
                 peek_char = ch;
                 break;
               }
             }
-            // Re-check boot_string availability
-            boot_string_available = (unit == 0xFF) && boot_string_ready &&
-                                    boot_string_pos < boot_string.size();
           }
           uint8_t ch;
-          // Check boot string first (for auto-boot feature, only on unit 0xFF)
-          if (boot_string_available) {
-            ch = boot_string[boot_string_pos++] & 0xFF;
-          } else if (input_char >= 0) {
+          if (input_char >= 0) {
             ch = input_char & 0xFF;
             input_char = -1;
           } else if (peek_char >= 0) {
@@ -1680,7 +1620,6 @@ public:
             peek_char = -1;
             // Check for ^C exit when consuming peeked char
             if (check_ctrl_c_exit(ch)) {
-              
               continue;  // ^C consumed - retry waiting for input
             }
           } else if (stdin_eof && !isatty(STDIN_FILENO)) {
@@ -1703,33 +1642,16 @@ public:
       case HBF_CIOOUT: {  // Console output
         uint8_t ch = cpu->regs.DE.get_low();
         emu_console_write_char(ch);
-        // Track output to detect boot prompt for --boot option
-        if (!boot_string.empty()) {
-          track_output_for_boot_prompt(ch);
-        }
         break;
       }
 
       case HBF_CIOIST: {  // Console input status - return count in A
         uint8_t count = 0;
-        // Check stdin for any unit that acts as console (0xFF, 0xD0, etc.)
-        // Most units map to the same physical console in emulation
-        bool check_stdin = (unit == 0xFF || unit == 0xD0 || unit == 0x00);
-        if (check_stdin) {
-          // Check real stdin input
-          // Must call stdin_has_data() to actually poll stdin for new input
+        // Check stdin for any unit that acts as console (0xFF, 0xD0, 0x00)
+        bool is_console_unit = (unit == 0xFF || unit == 0xD0 || unit == 0x00);
+        if (is_console_unit) {
           bool has_stdin = (input_char >= 0 || stdin_has_data());
-          // Check boot_string (only for unit 0xFF to avoid double-reading)
-          bool has_boot_string = (unit == 0xFF) && boot_string_ready && boot_string_pos < boot_string.size();
-          count = (has_stdin || has_boot_string) ? 1 : 0;
-          // Check if we should activate boot_string
-          if (count == 0 && !boot_string.empty() && unit == 0xFF) {
-            check_boot_string_activation();
-            // Re-check after activation
-            if (boot_string_ready && boot_string_pos < boot_string.size()) {
-              count = 1;
-            }
-          }
+          count = has_stdin ? 1 : 0;
         }
         result = count;
         break;
@@ -2209,8 +2131,6 @@ public:
           // Clear any pending console input to prevent boot menu getting garbage
           peek_char = -1;
           input_char = -1;
-          boot_string_ready = false;
-          boot_string_pos = 0;
 
           // Set PC to 0 to restart from ROM - return from HBIOS handler will continue
           // at address 0 instead of returning to caller
@@ -3478,7 +3398,6 @@ void print_usage(const char* prog) {
   fprintf(stderr, "  Single-slice 8MB images are detected as hd1k format.\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Other options:\n");
-  fprintf(stderr, "  --boot=STRING     Auto-type string at boot prompt (e.g., '2' for disk boot)\n");
   fprintf(stderr, "  --escape=CHAR     Console escape char (default ^E)\n");
   fprintf(stderr, "  --trace=FILE      Write execution trace to FILE\n");
   fprintf(stderr, "  --symbols=FILE    Load symbol table from FILE (.sym)\n");
@@ -3490,8 +3409,8 @@ void print_usage(const char* prog) {
   fprintf(stderr, "\n");
   fprintf(stderr, "Examples:\n");
   fprintf(stderr, "  %s --romwbw emu_romwbw.rom\n", prog);
-  fprintf(stderr, "  %s --romwbw emu_romwbw.rom --hbdisk0=hd1k_combo.img --boot=2\n", prog);
-  fprintf(stderr, "  %s --romwbw emu_romwbw.rom --hbdisk0=hd1k_games.img --boot=2\n", prog);
+  fprintf(stderr, "  %s --romwbw emu_romwbw.rom --hbdisk0=hd1k_combo.img\n", prog);
+  fprintf(stderr, "  %s --romwbw emu_romwbw.rom --hbdisk0=hd1k_games.img\n", prog);
 }
 
 int main(int argc, char** argv) {
@@ -3617,13 +3536,6 @@ int main(int argc, char** argv) {
       }
     } else if (strncmp(argv[i], "--romldr=", 9) == 0) {
       romldr_path = argv[i] + 9;
-    } else if (strncmp(argv[i], "--boot=", 7) == 0) {
-      boot_string = argv[i] + 7;
-      // Check if user provided a trailing CR/LF - if not, add CR
-      if (boot_string.empty() || (boot_string.back() != '\r' && boot_string.back() != '\n')) {
-        boot_string += '\r';  // Add CR to submit the boot command
-      }
-      fprintf(stderr, "Auto-boot string: '%s' (%zu chars)\n", boot_string.c_str(), boot_string.size());
     } else if (strncmp(argv[i], "--trace=", 8) == 0) {
       trace_file = argv[i] + 8;
     } else if (strncmp(argv[i], "--symbols=", 10) == 0) {
