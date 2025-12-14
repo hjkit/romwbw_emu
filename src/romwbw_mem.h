@@ -90,6 +90,15 @@ public:
 
     void set_debug(bool enable) { debug = enable; }
 
+    // Clear RAM for clean state when loading a new ROM
+    // (following porting notes: reset state when loading a new ROM)
+    void clear_ram() {
+        if (!banking_enabled || !ram) return;
+        memset(ram, 0x00, RAM_SIZE);
+        // Also clear shadow bitmap
+        memset(shadow_bitmap, 0, SHADOW_BITMAP_SIZE);
+    }
+
     // Bank selection - called from I/O handler
     void select_bank(uint8_t bank_id) {
         if (!banking_enabled) return;

@@ -39,6 +39,9 @@ int emu_console_read_char();
 // Queue a character for input (for async input sources)
 void emu_console_queue_char(int ch);
 
+// Clear the input queue (call on reset)
+void emu_console_clear_queue();
+
 // Write a character to console
 void emu_console_write_char(uint8_t ch);
 
