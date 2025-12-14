@@ -8,14 +8,44 @@ A hardware-level Z80 emulator for running RomWBW and CP/M from ROM and disk imag
 # Build the emulator
 cd src && make
 
-# Run RomWBW with the included ROM
+# Run RomWBW (boots to ROM disk)
 ./romwbw_emu --romwbw ../roms/emu_romwbw.rom
 
-# Or use a standard RomWBW ROM with disk image
-./romwbw_emu --romwbw ../roms/SBC_simh_std.rom --hbdisk0=~/path/to/hd512.img
+# Run with a hard disk image (boots CP/M from disk)
+./romwbw_emu --romwbw ../roms/emu_romwbw.rom --hbdisk0=hd1k_combo.img --boot=2
 ```
 
-At the RomWBW boot menu, press a key to select an OS (C for CP/M, Z for ZSDOS, etc.) or wait for auto-boot.
+At the RomWBW boot menu, press `2` to boot from disk, or `C` for CP/M from ROM.
+
+## Disk Images
+
+The emulator supports RomWBW hard disk images in both **hd1k** (modern) and **hd512** (classic) formats. Format is auto-detected from the MBR partition table.
+
+### Recommended Disk Images
+
+| Image | Size | Description |
+|-------|------|-------------|
+| `hd1k_combo.img` | 49MB | Multi-slice combo disk with CP/M 2.2 and utilities |
+| `hd1k_games.img` | 8MB | Classic games: Colossal Cave, Castle, Dungeon |
+| `hd1k_infocom.img` | 8MB | Infocom text adventures: Zork 1-3, Hitchhiker's Guide |
+| `hd1k_cpm22.img` | 8MB | CP/M 2.2 system disk |
+| `hd1k_zsdos.img` | 8MB | ZSDOS system disk |
+
+Download disk images from [RomWBW releases](https://github.com/wwarthen/RomWBW/releases) (in the Package.zip).
+
+### Disk Format Detection
+
+- **hd1k format**: Detected by partition type 0x2E in MBR, or 8MB file size
+  - 1MB prefix, 8MB slices, 16KB system area, 1024 directory entries
+- **hd512 format**: Default for other disk images
+  - No prefix, 8.3MB slices, 128KB system area, 512 directory entries
+
+### Drive Letters
+
+- `A:` - RAM disk (MD0)
+- `B:` - ROM disk (MD1)
+- `C:` - First hard disk (--hbdisk0)
+- `D:` - Second hard disk (--hbdisk1)
 
 ## WebAssembly Version
 
@@ -36,7 +66,7 @@ cd src/
 make           # Build romwbw_emu
 ```
 
-**Requirements:** C++11 compiler (gcc/clang), POSIX system (Linux)
+**Requirements:** C++11 compiler (gcc/clang), POSIX system (Linux/macOS)
 
 For WebAssembly:
 ```bash
@@ -48,60 +78,62 @@ make           # Requires emscripten
 
 - **Memory:** 512KB ROM + 512KB RAM with 32KB bank switching
 - **HBIOS:** Hardware abstraction layer implemented in C++
-- **Disks:** ROM disk, RAM disk, and up to 16 virtual hard disk images
+- **Disks:** ROM disk, RAM disk, and file-backed hard disk images
+- **Disk Formats:** Auto-detects hd1k and hd512 RomWBW formats
 - **Console:** Full terminal emulation with escape sequences
-- **Interrupts:** Maskable (INT) and non-maskable (NMI) support
 - **WebAssembly:** Run RomWBW in any modern browser
 
 ## Command Line Options
 
-```bash
+```
 ./romwbw_emu --romwbw <rom.rom> [options]
 
 Options:
-  --hbdiskN=FILE    Attach disk image N (0-15)
-  --romldr=FILE     Use boot loader from ROM
-  --romapp=K:FILE   Register ROM app with boot key K
-  --strict-io       Halt on unexpected I/O ports
+  --romwbw FILE     Enable RomWBW mode with ROM file
   --debug           Enable debug output
+  --strict-io       Halt on unexpected I/O ports
+
+Disk options:
+  --hbdisk0=FILE    Attach disk image to unit 0 (drive C:)
+  --hbdisk1=FILE    Attach disk image to unit 1 (drive D:)
+  --hdsk0=FILE      Attach SIMH HDSK disk (port 0xFD protocol)
+  --hdsk1=FILE      Attach SIMH HDSK disk (port 0xFD protocol)
+
+Other options:
+  --boot=STRING     Auto-type at boot prompt (e.g., '2' for disk)
+  --escape=CHAR     Console escape char (default ^E)
   --trace=FILE      Write execution trace
+  --symbols=FILE    Load symbol table (.sym)
 ```
 
-## Getting RomWBW Images
-
-Download pre-built ROM and disk images from the [RomWBW project](https://github.com/wwarthen/RomWBW):
+## Examples
 
 ```bash
-# Clone RomWBW for pre-built binaries
-git clone https://github.com/wwarthen/RomWBW.git
+# Boot from ROM disk (default)
+./romwbw_emu --romwbw emu_romwbw.rom
 
-# ROM images are in Binary/
-ls RomWBW/Binary/*.rom
+# Boot CP/M from hard disk
+./romwbw_emu --romwbw emu_romwbw.rom --hbdisk0=hd1k_combo.img --boot=2
 
-# Disk images are in Binary/
-ls RomWBW/Binary/*.img
+# Play Zork!
+./romwbw_emu --romwbw emu_romwbw.rom --hbdisk0=hd1k_infocom.img --boot=2
+# Then: C: and ZORK1
 ```
-
-The `SBC_std.rom` and `hd512_combo.img` work well with this emulator.
 
 ## Project Structure
 
 ```
 romwbw_emu/
 ├── src/
-│   ├── romwbw_emu.cc   # Main emulator
-│   ├── qkz80.*         # Z80/8080 CPU core
-│   ├── romwbw_mem.h    # Bank-switched memory
+│   ├── romwbw_emu.cc   # Main emulator with HBIOS and disk support
+│   ├── romwbw_mem.h    # Bank-switched memory (512KB ROM + 512KB RAM)
 │   ├── hbios_dispatch.*# HBIOS service handlers
-│   ├── emu_io*         # I/O abstraction layer
-│   └── emu_hbios.asm   # HBIOS entry points
+│   └── emu_io*         # I/O abstraction layer (CLI/WASM)
 ├── web/
 │   ├── romwbw.html     # RomWBW web interface
-│   ├── romwbw_web.cc   # WebAssembly emulator
-│   └── Makefile        # WebAssembly build
+│   └── romwbw_web.cc   # WebAssembly emulator
 ├── roms/               # ROM images and build scripts
 ├── disks/              # Disk images
-├── archive/cpm22/      # Legacy CP/M 2.2 emulator code
 └── docs/               # Technical documentation
 ```
 
@@ -110,12 +142,12 @@ romwbw_emu/
 - `docs/ROMWBW_INTEGRATION.md` - RomWBW architecture and HBIOS details
 - `docs/HBIOS_Implementation_Guide.md` - How HBIOS is implemented
 - `docs/HBIOS_DATA_EXPORTS.md` - HBIOS data structures
-- `docs/IOS_PORTING.md` - iOS/WebAssembly porting notes
+- `docs/IOS_README.md` - iOS/WebAssembly disk support notes
 
 ## Related Projects
 
-- [cpmemu-bdos](https://github.com/avwohl/cpmemu-bdos) - CP/M BDOS translator for running .com files on Linux
 - [RomWBW](https://github.com/wwarthen/RomWBW) - Z80/Z180 ROM-based system software
+- [cpmemu-bdos](https://github.com/avwohl/cpmemu-bdos) - CP/M BDOS translator for Linux
 
 ## License
 

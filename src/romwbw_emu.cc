@@ -3432,15 +3432,23 @@ void print_usage(const char* prog) {
   fprintf(stderr, "\n");
   fprintf(stderr, "Options:\n");
   fprintf(stderr, "  --version, -v     Show version information\n");
-  fprintf(stderr, "  --romwbw          Enable RomWBW mode (512KB ROM+RAM, Z80, bank switching)\n");
+  fprintf(stderr, "  --romwbw FILE     Enable RomWBW mode with ROM file (512KB ROM+RAM, Z80)\n");
   fprintf(stderr, "  --strict-io       Halt on unexpected I/O ports (for debugging)\n");
   fprintf(stderr, "  --debug           Enable debug output\n");
-  fprintf(stderr, "  --hbdisk0=FILE    Attach disk image for HBIOS disk unit 0 (emu_hbios mode)\n");
-  fprintf(stderr, "  --hbdisk1=FILE    Attach disk image for HBIOS disk unit 1 (emu_hbios mode)\n");
-  fprintf(stderr, "  --hdsk0=FILE      Attach SIMH HDSK disk image for unit 0 (port 0xFD)\n");
-  fprintf(stderr, "  --hdsk1=FILE      Attach SIMH HDSK disk image for unit 1 (port 0xFD)\n");
-  fprintf(stderr, "  --boot=STRING     Auto-boot string (e.g., '0' or 'C' for CP/M)\n");
-  fprintf(stderr, "                    Automatically entered at boot prompt\n");
+  fprintf(stderr, "\n");
+  fprintf(stderr, "Disk options:\n");
+  fprintf(stderr, "  --hbdisk0=FILE    Attach RomWBW disk image to unit 0 (appears as drive C:)\n");
+  fprintf(stderr, "  --hbdisk1=FILE    Attach RomWBW disk image to unit 1 (appears as drive D:)\n");
+  fprintf(stderr, "  --hdsk0=FILE      Attach SIMH HDSK disk to unit 0 (port 0xFD protocol)\n");
+  fprintf(stderr, "  --hdsk1=FILE      Attach SIMH HDSK disk to unit 1 (port 0xFD protocol)\n");
+  fprintf(stderr, "\n");
+  fprintf(stderr, "  Supported disk formats (auto-detected):\n");
+  fprintf(stderr, "    hd1k  - Modern RomWBW format with 1MB prefix, 8MB slices, 1024 dir entries\n");
+  fprintf(stderr, "    hd512 - Classic format, 8.3MB slices, 512 dir entries\n");
+  fprintf(stderr, "  Single-slice 8MB images are detected as hd1k format.\n");
+  fprintf(stderr, "\n");
+  fprintf(stderr, "Other options:\n");
+  fprintf(stderr, "  --boot=STRING     Auto-type string at boot prompt (e.g., '2' for disk boot)\n");
   fprintf(stderr, "  --escape=CHAR     Console escape char (default ^E)\n");
   fprintf(stderr, "  --trace=FILE      Write execution trace to FILE\n");
   fprintf(stderr, "  --symbols=FILE    Load symbol table from FILE (.sym)\n");
@@ -3451,8 +3459,9 @@ void print_usage(const char* prog) {
   fprintf(stderr, "  Use 'quit' to exit.\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Examples:\n");
-  fprintf(stderr, "  %s --romwbw SBC_simh_std.rom\n", prog);
-  fprintf(stderr, "  %s --romwbw SBC_simh_std.rom --hbdisk0=cpm_wbw.img --boot=0\n", prog);
+  fprintf(stderr, "  %s --romwbw emu_romwbw.rom\n", prog);
+  fprintf(stderr, "  %s --romwbw emu_romwbw.rom --hbdisk0=hd1k_combo.img --boot=2\n", prog);
+  fprintf(stderr, "  %s --romwbw emu_romwbw.rom --hbdisk0=hd1k_games.img --boot=2\n", prog);
 }
 
 int main(int argc, char** argv) {
