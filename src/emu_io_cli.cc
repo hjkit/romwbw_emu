@@ -312,6 +312,18 @@ void emu_error(const char* fmt, ...) {
   va_end(args);
 }
 
+void emu_fatal(const char* fmt, ...) {
+  fprintf(stderr, "\n*** FATAL ERROR ***\n");
+  va_list args;
+  va_start(args, fmt);
+  vfprintf(stderr, fmt, args);
+  va_end(args);
+  fprintf(stderr, "\n*** ABORTING ***\n");
+  fflush(stderr);
+  emu_io_cleanup();  // Restore terminal
+  abort();
+}
+
 void emu_status(const char* fmt, ...) {
   va_list args;
   va_start(args, fmt);

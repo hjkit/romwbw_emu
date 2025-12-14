@@ -252,6 +252,19 @@ void emu_error(const char* fmt, ...) {
   js_error(buf);
 }
 
+void emu_fatal(const char* fmt, ...) {
+  char buf[1024];
+  snprintf(buf, sizeof(buf), "*** FATAL ERROR ***\n");
+  js_error(buf);
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, args);
+  va_end(args);
+  js_error(buf);
+  js_error("*** ABORTING ***\n");
+  abort();
+}
+
 void emu_status(const char* fmt, ...) {
   char buf[1024];
   va_list args;

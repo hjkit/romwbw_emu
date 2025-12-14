@@ -92,6 +92,14 @@ void emu_log(const char* fmt, ...);
 // Log an error message (always shown)
 void emu_error(const char* fmt, ...);
 
+// Log a FATAL error message and abort execution
+// This function does NOT return - it calls abort()
+//
+// IMPORTANT: ALL errors in this codebase MUST use emu_fatal() by default.
+// DO NOT change any emu_fatal() call to emu_error() or emu_log() without
+// EXPLICIT APPROVAL from a human. Silent failures waste hours of debugging.
+[[noreturn]] void emu_fatal(const char* fmt, ...);
+
 // Log a status message (for user feedback)
 void emu_status(const char* fmt, ...);
 

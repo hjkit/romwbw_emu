@@ -338,6 +338,7 @@ public:
   void handleVDA();   // Video display
   void handleSND();   // Sound
   void handleDSKY();  // Display/Keypad
+  void handleEXT();   // Extension functions (slice calc)
 
   // Get dispatch addresses (for debugging)
   uint16_t getCIODispatch() const { return cio_dispatch; }
@@ -377,6 +378,11 @@ private:
   uint8_t bnkcpy_src_bank = 0x8E;
   uint8_t bnkcpy_dst_bank = 0x8E;
   uint16_t bnkcpy_count = 0;
+
+  // HBIOS heap state (SYSALLOC)
+  // Heap is in bank 0x80 starting after HCB (0x0200) up to 0x8000
+  uint16_t heap_ptr = 0x0200;
+  static constexpr uint16_t heap_end = 0x8000;
 
   // Bitmap tracking which RAM banks (0x80-0x8F) have been initialized
   uint16_t initialized_ram_banks = 0;

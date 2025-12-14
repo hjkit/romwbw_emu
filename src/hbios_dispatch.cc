@@ -7,6 +7,7 @@
 #include "hbios_dispatch.h"
 #include "emu_io.h"
 #include "qkz80.h"
+#include "qkz80_cpu_flags.h"
 #include "romwbw_mem.h"
 #include <cstring>
 #include <cctype>
@@ -45,6 +46,7 @@ void HBIOSDispatch::reset() {
   bnkcpy_src_bank = 0x8E;
   bnkcpy_dst_bank = 0x8E;
   bnkcpy_count = 0;
+  heap_ptr = 0x0200;  // Reset heap to start of HCB
   initialized_ram_banks = 0;  // Reset RAM bank initialization tracking
 
   vda_rows = 25;
@@ -100,8 +102,7 @@ bool HBIOSDispatch::loadDiskFromFile(int unit, const std::string& path) {
     // Try read-only
     handle = emu_disk_open(path, "r");
     if (!handle) {
-      emu_error("[HBIOS] Cannot open disk file: %s\n", path.c_str());
-      return false;
+      emu_fatal("[HBIOS] Cannot open disk file: %s\n", path.c_str());
     }
   }
 
@@ -370,6 +371,7 @@ int HBIOSDispatch::getTrapTypeFromFunc(uint8_t func) {
   if (func <= 0x3F) return 6;        // DSKY (0x30-0x3F)
   if (func <= 0x4F) return 4;        // VDA (0x40-0x4F)
   if (func <= 0x5F) return 5;        // SND (0x50-0x5F)
+  if (func == 0xE0) return 7;        // EXT (Extension functions)
   if (func >= 0xF0) return 3;        // SYS (0xF0-0xFF)
   return -1;
 }
@@ -384,6 +386,7 @@ bool HBIOSDispatch::handleCall(int trap_type) {
     case 4: handleVDA(); break;
     case 5: handleSND(); break;
     case 6: handleDSKY(); break;
+    case 7: handleEXT(); break;
     default: return false;
   }
   return true;
@@ -411,11 +414,10 @@ bool HBIOSDispatch::handleMainEntry() {
     case 4: handleVDA(); return true;
     case 5: handleSND(); return true;
     case 6: handleDSKY(); return true;
+    case 7: handleEXT(); return true;
     default:
       // Unknown function - return error and RET
-      if (debug) {
-        emu_log("[HBIOS] Unknown function 0x%02X (trap_type=%d)\n", func, trap_type);
-      }
+      emu_log("[HBIOS] Unknown function 0x%02X (trap_type=%d)\n", func, trap_type);
       cpu->regs.AF.set_high(HBR_FAILED);
       doRet();
       return true;
@@ -507,11 +509,7 @@ void HBIOSDispatch::handleCIO() {
     }
 
     default:
-      if (debug) {
-        emu_log("[HBIOS CIO] Unhandled function 0x%02X\n", func);
-      }
-      result = HBR_FAILED;
-      break;
+      emu_fatal("[HBIOS CIO] Unhandled function 0x%02X (unit=%d)\n", func, unit);
   }
 
   cpu->regs.AF.set_high(result);
@@ -585,7 +583,8 @@ void HBIOSDispatch::handleDIO() {
       if (is_memdisk || is_harddisk) {
         cpu->regs.DE.set_low(0x00);  // Ready
       } else {
-        result = HBR_FAILED;
+        emu_fatal("[HBIOS DIOSTATUS] unit %d not recognized (is_md=%d, is_hd=%d, hd_unit=%d)\n",
+                  raw_unit, is_memdisk, is_harddisk, hd_unit);
       }
       break;
     }
@@ -618,7 +617,8 @@ void HBIOSDispatch::handleDIO() {
           emu_log("[HBIOS DIO SEEK] HD%d (raw=%d) lba=%u\n", hd_unit, raw_unit, lba);
         }
       } else {
-        result = HBR_FAILED;
+        emu_fatal("[HBIOS DIOSEEK] unit %d not recognized (is_md=%d, is_hd=%d, hd_unit=%d)\n",
+                  raw_unit, is_memdisk, is_harddisk, hd_unit);
       }
       break;
     }
@@ -629,9 +629,8 @@ void HBIOSDispatch::handleDIO() {
       // Output: A=Result, E=Blocks Read
 
       if (!is_memdisk && !is_harddisk) {
-        result = HBR_FAILED;
-        cpu->regs.DE.set_low(0);
-        break;
+        emu_fatal("[HBIOS DIOREAD] unit %d not recognized (is_md=%d, is_hd=%d, hd_unit=%d)\n",
+                  raw_unit, is_memdisk, is_harddisk, hd_unit);
       }
 
       uint16_t buffer = cpu->regs.HL.get_pair16();
@@ -692,11 +691,6 @@ void HBIOSDispatch::handleDIO() {
         // Hard disk read - existing code
         uint32_t lba = disks[hd_unit].current_lba;
 
-        if (debug) {
-          emu_log("[HBIOS DIO READ] HD%d lba=%u count=%d buf=0x%04X bank=0x%02X\n",
-                  hd_unit, lba, count, buffer, buffer_bank);
-        }
-
         if (disks[hd_unit].file_backed && disks[hd_unit].handle) {
           // Read from file
           uint8_t sector_buf[512];
@@ -725,7 +719,8 @@ void HBIOSDispatch::handleDIO() {
             blocks_read++;
           }
         } else {
-          result = HBR_FAILED;
+          emu_fatal("[HBIOS DIOREAD] HD%d is_open but no data (file_backed=%d, data.empty=%d)\n",
+                    hd_unit, disks[hd_unit].file_backed, disks[hd_unit].data.empty());
         }
 
         // Update current_lba for next sequential access
@@ -742,9 +737,8 @@ void HBIOSDispatch::handleDIO() {
       // Output: A=Result, E=Blocks Written
 
       if (!is_memdisk && !is_harddisk) {
-        result = HBR_FAILED;
-        cpu->regs.DE.set_low(0);
-        break;
+        emu_fatal("[HBIOS DIOWRITE] unit %d not recognized (is_md=%d, is_hd=%d, hd_unit=%d)\n",
+                  raw_unit, is_memdisk, is_harddisk, hd_unit);
       }
 
       uint16_t buffer = cpu->regs.HL.get_pair16();
@@ -838,7 +832,8 @@ void HBIOSDispatch::handleDIO() {
             blocks_written++;
           }
         } else {
-          result = HBR_FAILED;
+          emu_fatal("[HBIOS DIOWRITE] HD%d is_open but no data (file_backed=%d, data.empty=%d)\n",
+                    hd_unit, disks[hd_unit].file_backed, disks[hd_unit].data.empty());
         }
 
         // Update current_lba for next sequential access
@@ -856,15 +851,21 @@ void HBIOSDispatch::handleDIO() {
 
     case HBF_DIODEVICE: {
       // Disk device info report
-      // Returns device type and attributes
+      // Returns: D=device type, E=device number within type
+      // Device types: 0x00=MD (memory disk), 0x09=HDSK
       if (is_memdisk) {
         cpu->regs.DE.set_high(0x00);  // DIODEV_MD (memory disk)
-        cpu->regs.DE.set_low(0x00);   // Subtype
+        cpu->regs.DE.set_low(md_unit); // Device number (0=MD0, 1=MD1)
       } else if (is_harddisk) {
-        cpu->regs.DE.set_high(0x03);  // DIODEV_IDE (hard disk type)
-        cpu->regs.DE.set_low(0x00);   // Subtype
+        cpu->regs.DE.set_high(0x09);  // DIODEV_HDSK (hard disk)
+        cpu->regs.DE.set_low(hd_unit); // Device number within type
       } else {
-        result = HBR_FAILED;
+        emu_fatal("[HBIOS DIODEVICE] unit %d not recognized (is_md=%d, is_hd=%d, hd_unit=%d)\n",
+                  raw_unit, is_memdisk, is_harddisk, hd_unit);
+      }
+      if (debug) {
+        emu_log("[HBIOS DIODEVICE] Unit %d: type=0x%02X num=%d\n",
+                raw_unit, cpu->regs.DE.get_high(), cpu->regs.DE.get_low());
       }
       break;
     }
@@ -876,7 +877,8 @@ void HBIOSDispatch::handleDIO() {
       } else if (is_harddisk) {
         cpu->regs.DE.set_low(MID_HD);  // Hard disk media
       } else {
-        result = HBR_FAILED;
+        emu_fatal("[HBIOS DIOMEDIA] unit %d not recognized (is_md=%d, is_hd=%d, hd_unit=%d)\n",
+                  raw_unit, is_memdisk, is_harddisk, hd_unit);
       }
       break;
     }
@@ -897,7 +899,8 @@ void HBIOSDispatch::handleDIO() {
         cpu->regs.DE.set_pair16(sectors & 0xFFFF);
         cpu->regs.HL.set_pair16((sectors >> 16) & 0xFFFF);
       } else {
-        result = HBR_FAILED;
+        emu_fatal("[HBIOS DIOCAP] unit %d not recognized (is_md=%d, is_hd=%d, hd_unit=%d)\n",
+                  raw_unit, is_memdisk, is_harddisk, hd_unit);
       }
       break;
     }
@@ -913,11 +916,8 @@ void HBIOSDispatch::handleDIO() {
     }
 
     default:
-      if (debug) {
-        emu_log("[HBIOS DIO] Unhandled function 0x%02X\n", func);
-      }
-      result = HBR_FAILED;
-      break;
+      emu_fatal("[HBIOS DIO] Unhandled function 0x%02X (unit=%d is_md=%d is_hd=%d hd_unit=%d)\n",
+                func, raw_unit, is_memdisk, is_harddisk, hd_unit);
   }
 
   cpu->regs.AF.set_high(result);
@@ -960,11 +960,7 @@ void HBIOSDispatch::handleRTC() {
       break;
 
     default:
-      if (debug) {
-        emu_log("[HBIOS RTC] Unhandled function 0x%02X\n", func);
-      }
-      result = HBR_FAILED;
-      break;
+      emu_fatal("[HBIOS RTC] Unhandled function 0x%02X\n", func);
   }
 
   cpu->regs.AF.set_high(result);
@@ -1001,11 +997,10 @@ void HBIOSDispatch::handleSYS() {
     }
 
     case HBF_SYSVER: {
-      // Get HBIOS version
-      // DE = version (e.g., 0x362B = 3.6.0.43)
-      // L = platform ID
-      cpu->regs.DE.set_pair16(0x362B);
-      cpu->regs.HL.set_low(0x00);  // Platform = EMU
+      // Get HBIOS version - match CLI exactly
+      // Format: D=major/minor (high/low nibble), E=update/patch (high/low nibble)
+      cpu->regs.DE.set_pair16(0x3510);  // Version 3.5.1.0
+      cpu->regs.HL.set_low(0x01);  // Platform ID = SBC
       break;
     }
 
@@ -1118,6 +1113,46 @@ void HBIOSDispatch::handleSYS() {
       break;
     }
 
+    case HBF_SYSALLOC: {
+      // Allocate memory from HBIOS heap
+      // Input: HL = size requested
+      // Output: A = result, HL = address of allocated block (or 0 on failure)
+      // Heap is in bank 0x80 starting after HCB (0x0200) up to 0x8000
+      uint16_t size = cpu->regs.HL.get_pair16();
+
+      // Always log SYSALLOC to debug panic issues
+      emu_log("[HBIOS SYSALLOC] REQUEST: size=0x%04X (%u) C=0x%02X DE=0x%04X heap_ptr=0x%04X heap_end=0x%04X\n",
+              size, size, subfunc, cpu->regs.DE.get_pair16(), heap_ptr, heap_end);
+
+      if (heap_ptr + size <= heap_end) {
+        uint16_t addr = heap_ptr;
+        heap_ptr += size;
+        cpu->regs.HL.set_pair16(addr);
+        // Set flags: Z=1 (success), C=0 (no error)
+        cpu->regs.AF.set_low(qkz80_cpu_flags::Z);
+        emu_log("[HBIOS SYSALLOC] SUCCESS: allocated 0x%04X, new heap_ptr=0x%04X\n", addr, heap_ptr);
+      } else {
+        // Out of heap memory
+        emu_log("[HBIOS SYSALLOC] FAILED: size=%u (0x%04X) exceeds available heap (ptr=0x%04X end=0x%04X)\n",
+                size, size, heap_ptr, heap_end);
+        cpu->regs.HL.set_pair16(0);
+        // Set flags: Z=0 (failure), C=1 (error)
+        cpu->regs.AF.set_low(qkz80_cpu_flags::CY);
+        result = HBR_NOMEM;
+      }
+      break;
+    }
+
+    case HBF_SYSFREE: {
+      // Free memory from HBIOS heap
+      // Input: HL = address of block to free
+      // We don't actually track allocations, so just succeed
+      if (debug) {
+        emu_log("[HBIOS SYSFREE] addr=0x%04X (no-op)\n", cpu->regs.HL.get_pair16());
+      }
+      break;
+    }
+
     case HBF_SYSGET: {
       // Get system info - subfunc in C
       switch (subfunc) {
@@ -1149,20 +1184,67 @@ void HBIOSDispatch::handleSYS() {
           cpu->regs.DE.set_low(1);  // 1 sound device
           break;
 
+        case SYSGET_RTCCNT:
+          cpu->regs.DE.set_low(1);  // 1 RTC device
+          break;
+
+        case SYSGET_DSKYCNT:
+          cpu->regs.DE.set_low(0);  // 0 DSKY devices
+          break;
+
         case SYSGET_BOOTINFO:
           // Boot info - return boot device (unit 0)
           cpu->regs.DE.set_low(0);
           break;
 
+        case SYSGET_SWITCH:
+          // Get non-volatile switch value - match CLI (0 = no switches)
+          cpu->regs.HL.set_low(0x00);
+          break;
+
+        case SYSGET_CPUINFO:
+          // CPU info: DE = CPU type/speed, HL = clock speed in KHz
+          cpu->regs.DE.set_pair16(0x0004);  // Z80 @ 4MHz
+          cpu->regs.HL.set_pair16(4000);    // 4000 KHz
+          break;
+
+        case SYSGET_MEMINFO:
+          // Memory info: D = ROM bank count, E = RAM bank count
+          cpu->regs.DE.set_high(16);  // 16 ROM banks (512KB/32KB)
+          cpu->regs.DE.set_low(16);   // 16 RAM banks (512KB/32KB)
+          break;
+
         case SYSGET_BNKINFO:
           // Bank info: D = BIOS bank, E = user bank
-          cpu->regs.DE.set_high(0x80);  // BIOS in bank 0
-          cpu->regs.DE.set_low(0x8E);   // User in bank 14
+          cpu->regs.DE.set_high(0x80);  // BIOS in bank 0x80
+          cpu->regs.DE.set_low(0x8E);   // User in bank 0x8E
+          break;
+
+        case SYSGET_CPUSPD:
+          // CPU speed & wait states: H = wait states, L = speed divisor
+          cpu->regs.HL.set_high(0);  // No wait states
+          cpu->regs.HL.set_low(1);   // Speed divisor 1 (full speed)
           break;
 
         case SYSGET_PANEL:
-          // Front panel switches - return 0xFF (required for emu ROMs to use HBIOS)
-          cpu->regs.HL.set_low(0xFF);
+          // Front panel switches - match CLI (0 = no panel)
+          cpu->regs.HL.set_low(0x00);
+          break;
+
+        case SYSGET_APPBNKS:
+          // App bank information: D = first app bank ID, E = app bank count
+          // Read from HCB at CB_BIDAPP0 (0x1E0) and CB_APP_BNKS (0x1E1)
+          if (memory) {
+            uint8_t app_bank_start = memory->read_bank(0x80, 0x1E0);
+            uint8_t app_bank_count = memory->read_bank(0x80, 0x1E1);
+            cpu->regs.DE.set_high(app_bank_start);
+            cpu->regs.DE.set_low(app_bank_count);
+            if (debug) {
+              emu_log("[HBIOS APPBNKS] first=0x%02X count=%d\n", app_bank_start, app_bank_count);
+            }
+          } else {
+            cpu->regs.DE.set_pair16(0);
+          }
           break;
 
         case SYSGET_DEVLIST: {
@@ -1190,9 +1272,11 @@ void HBIOSDispatch::handleSYS() {
         }
 
         default:
-          if (debug) {
-            emu_log("[HBIOS SYSGET] Unhandled subfunction 0x%02X\n", subfunc);
-          }
+          // Always log unhandled SYSGET calls to help debug
+          emu_log("[HBIOS SYSGET] Unhandled subfunction 0x%02X (DE=0x%04X HL=0x%04X)\n",
+                  subfunc, cpu->regs.DE.get_pair16(), cpu->regs.HL.get_pair16());
+          // Return E=0 as safe default for count-type queries
+          cpu->regs.DE.set_low(0);
           break;
       }
       break;
@@ -1234,6 +1318,34 @@ void HBIOSDispatch::handleSYS() {
       break;
     }
 
+    case HBF_SYSSET: {
+      // Set system info - subfunc in C
+      switch (subfunc) {
+        case SYSSET_SWITCH:
+          // Set front panel switches - just ignore
+          break;
+        case SYSSET_BOOTINFO:
+          // Set boot volume and bank info
+          // D = boot device/unit, E = boot bank, L = boot slice
+          if (debug) {
+            emu_log("[SYSSET BOOTINFO] device=%d bank=0x%02X slice=%d\n",
+                    cpu->regs.DE.get_high(), cpu->regs.DE.get_low(), cpu->regs.HL.get_low());
+          }
+          break;
+        default:
+          if (debug) {
+            emu_log("[HBIOS SYSSET] Unhandled subfunction 0x%02X\n", subfunc);
+          }
+          break;
+      }
+      break;
+    }
+
+    case HBF_SYSINT: {
+      // Interrupt management - just return success
+      break;
+    }
+
     case HBF_SYSBOOT: {
       // Boot from device (custom EMU function)
       // HL = address of command string
@@ -1259,17 +1371,13 @@ void HBIOSDispatch::handleSYS() {
 
       // Try to boot
       if (!bootFromDevice(p)) {
-        result = HBR_FAILED;
+        emu_fatal("[HBIOS SYSBOOT] bootFromDevice('%s') failed\n", p);
       }
       break;
     }
 
     default:
-      if (debug) {
-        emu_log("[HBIOS SYS] Unhandled function 0x%02X\n", func);
-      }
-      result = HBR_FAILED;
-      break;
+      emu_fatal("[HBIOS SYS] Unhandled function 0x%02X (subfunc=%d)\n", func, subfunc);
   }
 
   cpu->regs.AF.set_high(result);
@@ -1524,6 +1632,50 @@ void HBIOSDispatch::handleDSKY() {
 }
 
 //=============================================================================
+// Extension Functions (EXT)
+//=============================================================================
+
+void HBIOSDispatch::handleEXT() {
+  if (!cpu || !memory) return;
+
+  uint8_t func = cpu->regs.BC.get_high();
+  uint8_t unit = cpu->regs.BC.get_low();
+  uint8_t result = HBR_SUCCESS;
+
+  switch (func) {
+    case HBF_EXTSLICE: {
+      // Calculate slice starting LBA
+      // Input: B=0xE0, C=unit, D=device info, E=slice index
+      // Output: A=result, DE:HL=starting LBA of slice
+      uint8_t slice_index = cpu->regs.DE.get_low();  // Slice is in E register only
+
+      // Standard RomWBW slice size is 8MB = 16384 sectors (at 512 bytes/sector)
+      const uint32_t SLICE_SECTORS = 16384;
+
+      // Calculate starting LBA for this slice
+      uint32_t start_lba = (uint32_t)slice_index * SLICE_SECTORS;
+
+      // Return 32-bit LBA in DE:HL (DE = high 16 bits, HL = low 16 bits)
+      cpu->regs.DE.set_pair16((start_lba >> 16) & 0xFFFF);
+      cpu->regs.HL.set_pair16(start_lba & 0xFFFF);
+
+      emu_log("[HBIOS EXTSLICE] unit=%d slice=%d -> LBA=%u (DE=0x%04X HL=0x%04X)\n",
+              unit, slice_index, start_lba,
+              cpu->regs.DE.get_pair16(), cpu->regs.HL.get_pair16());
+      break;
+    }
+
+    default:
+      emu_log("[HBIOS EXT] Unhandled function 0x%02X\n", func);
+      result = HBR_NOFUNC;
+      break;
+  }
+
+  cpu->regs.AF.set_high(result);
+  doRet();
+}
+
+//=============================================================================
 // Boot Helper
 //=============================================================================
 
@@ -1540,13 +1692,11 @@ bool HBIOSDispatch::bootFromDevice(const char* cmd_str) {
       // Load and boot ROM application
       std::vector<uint8_t> app_data;
       if (!emu_file_load(rom_apps[app_idx].sys_path, app_data)) {
-        emu_error("[SYSBOOT] Cannot load ROM app: %s\n", rom_apps[app_idx].sys_path.c_str());
-        return false;
+        emu_fatal("[SYSBOOT] Cannot load ROM app: %s\n", rom_apps[app_idx].sys_path.c_str());
       }
 
       if (app_data.size() < 0x600) {
-        emu_error("[SYSBOOT] ROM app too small\n");
-        return false;
+        emu_fatal("[SYSBOOT] ROM app too small (size=%zu, need at least 0x600)\n", app_data.size());
       }
 
       // Read metadata from offset 0x5E0
@@ -1596,8 +1746,8 @@ bool HBIOSDispatch::bootFromDevice(const char* cmd_str) {
   }
 
   if (boot_unit < 0 || boot_unit >= 16 || !disks[boot_unit].is_open) {
-    emu_error("[SYSBOOT] Invalid disk unit %d\n", boot_unit);
-    return false;
+    emu_fatal("[SYSBOOT] Invalid disk unit %d (is_open=%d)\n", boot_unit,
+              (boot_unit >= 0 && boot_unit < 16) ? disks[boot_unit].is_open : -1);
   }
 
   if (debug) {
@@ -1616,8 +1766,7 @@ bool HBIOSDispatch::bootFromDevice(const char* cmd_str) {
   }
 
   if (meta_read < 32) {
-    emu_error("[SYSBOOT] Cannot read disk metadata\n");
-    return false;
+    emu_fatal("[SYSBOOT] Cannot read disk metadata (read %zu, need 32)\n", meta_read);
   }
 
   // Parse metadata (little-endian)
