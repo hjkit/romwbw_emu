@@ -140,7 +140,12 @@ void emu_console_queue_char(int ch) {
 }
 
 void emu_console_write_char(uint8_t ch) {
-  js_console_output(ch & 0x7F);
+  ch &= 0x7F;  // Strip high bit
+  // CP/M sends \r\n, but browsers only need \n
+  // Skip \r to avoid double-spacing issues
+  if (ch != '\r') {
+    js_console_output(ch);
+  }
 }
 
 bool emu_console_check_escape(char escape_char) {
