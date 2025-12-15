@@ -160,6 +160,8 @@
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
   <script src="romwbw.js"></script>
   <script>
+    const EMU_VERSION = '@VERSION@';
+
     // Terminal setup
     const term = new Terminal({
       cols: 80,
@@ -375,7 +377,9 @@
           if (ch < 0) ch = 0;
           if (ch > 31) ch = 31;
         }
+        console.log('[KEY] char=' + ch + ' waiting=' + Module._romwbw_is_waiting());
         Module._romwbw_key_input(ch);
+        console.log('[KEY] after input waiting=' + Module._romwbw_is_waiting());
       }
     });
 
@@ -640,7 +644,7 @@
     Module.onRuntimeInitialized = function() {
       statusDiv.textContent = 'Ready - Load a ROM or click Start';
       startBtn.disabled = false;
-      term.writeln('RomWBW Emulator ready.');
+      term.writeln('RomWBW Emulator v' + EMU_VERSION + ' ready.');
       term.writeln('Load a ROM image or click Start to boot.');
       term.writeln('');
     };

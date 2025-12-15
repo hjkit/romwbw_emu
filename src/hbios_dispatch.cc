@@ -192,6 +192,74 @@ void HBIOSDispatch::initMemoryDisks() {
 }
 
 //=============================================================================
+// Disk Unit Table Population
+//=============================================================================
+
+void HBIOSDispatch::populateDiskUnitTable() {
+  if (!memory) {
+    emu_log("[DISKUT] Warning: memory not available\n");
+    return;
+  }
+
+  // The disk unit table is at HCB+0x60 (address 0x160), 16 entries of 4 bytes each
+  // Format per entry:
+  //   Byte 0: Device type (DIODEV_*): 0x00=MD, 0x09=HDSK, 0xFF=empty
+  //   Byte 1: Unit number within device type
+  //   Byte 2: Mode/attributes (0x80 = removable, etc.)
+  //   Byte 3: Reserved/LU
+  const uint16_t DISKUT_BASE = 0x160;  // HCB+0x60
+
+  // First, mark all 16 entries as empty (0xFF) in both ROM bank 0 and RAM bank 0x80
+  for (int i = 0; i < 16; i++) {
+    for (int b = 0; b < 4; b++) {
+      memory->write_bank(0x00, DISKUT_BASE + i * 4 + b, 0xFF);
+      memory->write_bank(0x80, DISKUT_BASE + i * 4 + b, 0xFF);
+    }
+  }
+
+  int disk_idx = 0;
+
+  // Add memory disks (MD0=RAM, MD1=ROM) if enabled
+  for (int i = 0; i < 2 && disk_idx < 16; i++) {
+    if (md_disks[i].is_enabled) {
+      // Write to both ROM bank 0 (for initial read) and RAM bank 0x80 (working copy)
+      memory->write_bank(0x00, DISKUT_BASE + disk_idx * 4 + 0, 0x00);  // DIODEV_MD
+      memory->write_bank(0x00, DISKUT_BASE + disk_idx * 4 + 1, i);     // Unit number
+      memory->write_bank(0x00, DISKUT_BASE + disk_idx * 4 + 2, 0x00);  // No special attrs
+      memory->write_bank(0x00, DISKUT_BASE + disk_idx * 4 + 3, 0x00);
+      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 0, 0x00);
+      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 1, i);
+      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 2, 0x00);
+      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 3, 0x00);
+      emu_log("[DISKUT] Entry %d: MD%d (memory disk)\n", disk_idx, i);
+      disk_idx++;
+    }
+  }
+
+  // Add hard disks from disks[] array
+  for (int i = 0; i < 16 && disk_idx < 16; i++) {
+    if (disks[i].is_open) {
+      memory->write_bank(0x00, DISKUT_BASE + disk_idx * 4 + 0, 0x09);  // DIODEV_HDSK
+      memory->write_bank(0x00, DISKUT_BASE + disk_idx * 4 + 1, i);     // HDSK unit number
+      memory->write_bank(0x00, DISKUT_BASE + disk_idx * 4 + 2, 0x00);  // No special attrs
+      memory->write_bank(0x00, DISKUT_BASE + disk_idx * 4 + 3, 0x00);
+      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 0, 0x09);
+      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 1, i);
+      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 2, 0x00);
+      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 3, 0x00);
+      emu_log("[DISKUT] Entry %d: HD%d (hard disk, %zu bytes)\n", disk_idx, i, disks[i].size);
+      disk_idx++;
+    }
+  }
+
+  // Update device count at HCB+0x0C (CB_DEVCNT)
+  memory->write_bank(0x00, 0x10C, disk_idx);
+  memory->write_bank(0x80, 0x10C, disk_idx);
+
+  emu_log("[DISKUT] Populated %d disk entries in HCB\n", disk_idx);
+}
+
+//=============================================================================
 // ROM Application Management
 //=============================================================================
 
@@ -399,13 +467,6 @@ bool HBIOSDispatch::handleMainEntry() {
   uint8_t unit = cpu->regs.BC.get_low();
   int trap_type = getTrapTypeFromFunc(func);
 
-  if (debug) {
-    uint16_t de = cpu->regs.DE.get_pair16();
-    uint16_t hl = cpu->regs.HL.get_pair16();
-    emu_log("[HBIOS] func=0x%02X unit=0x%02X DE=0x%04X HL=0x%04X type=%d\n",
-            func, unit, de, hl, trap_type);
-  }
-
   switch (trap_type) {
     case 0: handleCIO(); return true;
     case 1: handleDIO(); return true;
@@ -418,7 +479,7 @@ bool HBIOSDispatch::handleMainEntry() {
     default:
       // Unknown function - return error and RET
       emu_log("[HBIOS] Unknown function 0x%02X (trap_type=%d)\n", func, trap_type);
-      cpu->regs.AF.set_high(HBR_FAILED);
+      setResult(HBR_FAILED);
       doRet();
       return true;
   }
@@ -440,6 +501,17 @@ void HBIOSDispatch::handlePortDispatch() {
 // Helper Functions
 //=============================================================================
 
+void HBIOSDispatch::setResult(uint8_t result) {
+  // Set A register and Z flag for HBIOS return
+  // HBIOS convention: Z flag SET means success (A=0)
+  cpu->regs.AF.set_high(result);
+  if (result == 0) {
+    cpu->regs.set_flag_bits(qkz80_cpu_flags::Z);
+  } else {
+    cpu->regs.clear_flag_bits(qkz80_cpu_flags::Z);
+  }
+}
+
 void HBIOSDispatch::doRet() {
   // Skip synthetic RET when using I/O port dispatch
   // (Z80 proxy code has its own RET instruction)
@@ -450,8 +522,14 @@ void HBIOSDispatch::doRet() {
   uint16_t sp = cpu->regs.SP.get_pair16();
   uint8_t lo = memory->fetch_mem(sp);
   uint8_t hi = memory->fetch_mem(sp + 1);
+  uint16_t ret_addr = lo | (hi << 8);
   cpu->regs.SP.set_pair16(sp + 2);
-  cpu->regs.PC.set_pair16(lo | (hi << 8));
+  cpu->regs.PC.set_pair16(ret_addr);
+
+  if (debug) {
+    emu_log("[HBIOS RET] SP=0x%04X -> PC=0x%04X A=0x%02X\n",
+            sp, ret_addr, cpu->regs.AF.get_high());
+  }
 }
 
 void HBIOSDispatch::writeConsoleString(const char* str) {
@@ -474,6 +552,7 @@ void HBIOSDispatch::handleCIO() {
   switch (func) {
     case HBF_CIOIN: {
       // Read character - behavior depends on dispatch mode and platform
+      static int in_count = 0;
       if (skip_ret && blocking_allowed) {
         // Port-based dispatch on CLI - can block until input available
         while (!emu_console_has_input()) {
@@ -490,6 +569,10 @@ void HBIOSDispatch::handleCIO() {
         break;
       }
       int ch = emu_console_read_char();
+      if (in_count < 5) {
+        emu_log("[CIOIN] read char=%d (0x%02X) '%c'\n", ch, ch, (ch >= 32 && ch < 127) ? ch : '.');
+        in_count++;
+      }
       cpu->regs.DE.set_low(ch & 0xFF);
       waiting_for_input = false;
       break;
@@ -504,7 +587,13 @@ void HBIOSDispatch::handleCIO() {
 
     case HBF_CIOIST: {
       // Input status
-      cpu->regs.DE.set_low(emu_console_has_input() ? 0xFF : 0x00);
+      bool has_input = emu_console_has_input();
+      cpu->regs.DE.set_low(has_input ? 0xFF : 0x00);
+      static int ist_count = 0;
+      if (has_input && ist_count < 5) {
+        emu_log("[CIOIST] has_input=true, returning E=0xFF\n");
+        ist_count++;
+      }
       break;
     }
 
@@ -538,7 +627,7 @@ void HBIOSDispatch::handleCIO() {
       emu_fatal("[HBIOS CIO] Unhandled function 0x%02X (unit=%d)\n", func, unit);
   }
 
-  cpu->regs.AF.set_high(result);
+  setResult(result);
   doRet();
 }
 
@@ -597,9 +686,6 @@ void HBIOSDispatch::handleDIO() {
   uint8_t raw_unit = cpu->regs.BC.get_low();   // C = unit
   uint8_t result = HBR_SUCCESS;
 
-  // Log all DIO calls to trace boot issues
-  emu_log("[HBIOS DIO] func=0x%02X unit=%d\n", func, raw_unit);
-
   // Check if this is a memory disk (MD) or hard disk (HD)
   bool is_memdisk = is_md_unit(raw_unit, md_disks);
   uint8_t md_unit = get_md_index(raw_unit);  // Map to MD index (0=MD0, 1=MD1)
@@ -638,10 +724,8 @@ void HBIOSDispatch::handleDIO() {
 
       if (is_memdisk) {
         md_disks[md_unit].current_lba = lba;
-        emu_log("[HBIOS DIO SEEK] MD%d lba=%u\n", md_unit, lba);
       } else if (is_harddisk) {
         disks[hd_unit].current_lba = lba;
-        emu_log("[HBIOS DIO SEEK] HD%d (raw=%d) lba=%u\n", hd_unit, raw_unit, lba);
       } else {
         // No device at this unit - return error
         char errmsg[128];
@@ -699,17 +783,11 @@ void HBIOSDispatch::handleDIO() {
         MemDiskState& md = md_disks[md_unit];
         uint32_t lba = md.current_lba;
 
-        if (debug) {
-          emu_log("[HBIOS MD READ] MD%d lba=%u count=%d buf=0x%04X bank=0x%02X\n",
-                  md_unit, lba, count, buffer, buffer_bank);
-        }
-
         // 64 sectors per 32KB bank (512 bytes per sector)
         const uint32_t sectors_per_bank = 64;
 
         for (int s = 0; s < count; s++) {
           if (md.current_lba >= md.total_sectors()) {
-            if (debug) emu_log("[HBIOS MD READ] Hit end of disk at LBA %u\n", md.current_lba);
             break;
           }
 
@@ -728,12 +806,8 @@ void HBIOSDispatch::handleDIO() {
           blocks_read++;
         }
       } else {
-        // Hard disk read - existing code
+        // Hard disk read
         uint32_t lba = disks[hd_unit].current_lba;
-
-        // Always log HD reads to debug boot issues
-        emu_log("[HBIOS HD READ] hd_unit=%d lba=%u count=%d buf=0x%04X bank=0x%02X data.size=%zu\n",
-                hd_unit, lba, count, buffer, buffer_bank, disks[hd_unit].data.size());
 
         if (disks[hd_unit].file_backed && disks[hd_unit].handle) {
           // Read from file
@@ -769,10 +843,6 @@ void HBIOSDispatch::handleDIO() {
 
         // Update current_lba for next sequential access
         disks[hd_unit].current_lba += blocks_read;
-
-        // Log result
-        emu_log("[HBIOS HD READ] completed: blocks_read=%d new_lba=%u\n",
-                blocks_read, disks[hd_unit].current_lba);
       }
 
       cpu->regs.DE.set_low(blocks_read);
@@ -816,14 +886,8 @@ void HBIOSDispatch::handleDIO() {
         // Memory disk write - write to RAM bank memory
         MemDiskState& md = md_disks[md_unit];
 
-        if (debug) {
-          emu_log("[HBIOS MD WRITE] MD%d lba=%u count=%d buf=0x%04X bank=0x%02X\n",
-                  md_unit, md.current_lba, count, buffer, buffer_bank);
-        }
-
         // Check if ROM disk (read-only)
         if (md.is_rom) {
-          if (debug) emu_log("[HBIOS MD WRITE] MD%d is ROM disk, write protected\n", md_unit);
           result = HBR_READONLY;
           cpu->regs.DE.set_low(0);
           break;
@@ -851,13 +915,8 @@ void HBIOSDispatch::handleDIO() {
           blocks_written++;
         }
       } else {
-        // Hard disk write - existing code
+        // Hard disk write
         uint32_t lba = disks[hd_unit].current_lba;
-
-        if (debug) {
-          emu_log("[HBIOS DIO WRITE] HD%d lba=%u count=%d buf=0x%04X bank=0x%02X\n",
-                  hd_unit, lba, count, buffer, buffer_bank);
-        }
 
         if (disks[hd_unit].file_backed && disks[hd_unit].handle) {
           uint8_t sector_buf[512];
@@ -979,7 +1038,7 @@ void HBIOSDispatch::handleDIO() {
                 func, raw_unit, is_memdisk, is_harddisk, hd_unit);
   }
 
-  cpu->regs.AF.set_high(result);
+  setResult(result);
   doRet();
 }
 
@@ -1022,7 +1081,7 @@ void HBIOSDispatch::handleRTC() {
       emu_fatal("[HBIOS RTC] Unhandled function 0x%02X\n", func);
   }
 
-  cpu->regs.AF.set_high(result);
+  setResult(result);
   doRet();
 }
 
@@ -1042,7 +1101,7 @@ void HBIOSDispatch::handleSYS() {
       // System reset - C register: 0x01 = warm boot, 0x02 = cold boot
       uint8_t reset_type = subfunc;  // subfunc is C register
       // Always log SYSRESET since it causes reboot
-      emu_log("[HBIOS SYSRESET] reset_type=0x%02X\n", reset_type);
+      if (debug) emu_log("[HBIOS SYSRESET] reset_type=0x%02X\n", reset_type);
       if (reset_type == 0x01 || reset_type == 0x02) {
         // Call the reset callback if set
         if (reset_callback) {
@@ -1180,7 +1239,7 @@ void HBIOSDispatch::handleSYS() {
       uint16_t size = cpu->regs.HL.get_pair16();
 
       // Always log SYSALLOC to debug panic issues
-      emu_log("[HBIOS SYSALLOC] REQUEST: size=0x%04X (%u) C=0x%02X DE=0x%04X heap_ptr=0x%04X heap_end=0x%04X\n",
+      if (debug) emu_log("[HBIOS SYSALLOC] REQUEST: size=0x%04X (%u) C=0x%02X DE=0x%04X heap_ptr=0x%04X heap_end=0x%04X\n",
               size, size, subfunc, cpu->regs.DE.get_pair16(), heap_ptr, heap_end);
 
       if (heap_ptr + size <= heap_end) {
@@ -1189,10 +1248,10 @@ void HBIOSDispatch::handleSYS() {
         cpu->regs.HL.set_pair16(addr);
         // Set flags: Z=1 (success), C=0 (no error)
         cpu->regs.AF.set_low(qkz80_cpu_flags::Z);
-        emu_log("[HBIOS SYSALLOC] SUCCESS: allocated 0x%04X, new heap_ptr=0x%04X\n", addr, heap_ptr);
+        if (debug) emu_log("[HBIOS SYSALLOC] SUCCESS: allocated 0x%04X, new heap_ptr=0x%04X\n", addr, heap_ptr);
       } else {
         // Out of heap memory
-        emu_log("[HBIOS SYSALLOC] FAILED: size=%u (0x%04X) exceeds available heap (ptr=0x%04X end=0x%04X)\n",
+        if (debug) emu_log("[HBIOS SYSALLOC] FAILED: size=%u (0x%04X) exceeds available heap (ptr=0x%04X end=0x%04X)\n",
                 size, size, heap_ptr, heap_end);
         cpu->regs.HL.set_pair16(0);
         // Set flags: Z=0 (failure), C=1 (error)
@@ -1439,7 +1498,7 @@ void HBIOSDispatch::handleSYS() {
       emu_fatal("[HBIOS SYS] Unhandled function 0x%02X (subfunc=%d)\n", func, subfunc);
   }
 
-  cpu->regs.AF.set_high(result);
+  setResult(result);
   doRet();
 }
 
@@ -1571,7 +1630,7 @@ void HBIOSDispatch::handleVDA() {
       break;
   }
 
-  cpu->regs.AF.set_high(result);
+  setResult(result);
   doRet();
 }
 
@@ -1648,7 +1707,7 @@ void HBIOSDispatch::handleSND() {
       break;
   }
 
-  cpu->regs.AF.set_high(result);
+  setResult(result);
   doRet();
 }
 
@@ -1686,7 +1745,7 @@ void HBIOSDispatch::handleDSKY() {
       break;
   }
 
-  cpu->regs.AF.set_high(result);
+  setResult(result);
   doRet();
 }
 
@@ -1722,7 +1781,7 @@ void HBIOSDispatch::handleEXT() {
         // Memory disks don't have slices - return LBA 0
         slice_lba = 0;
         media_id = (disk_unit == 0 || (disk_unit >= 0x80 && disk_unit < 0x82)) ? 0x01 : 0x02;
-        emu_log("[HBIOS EXTSLICE] Memory disk unit 0x%02X, no slices\n", disk_unit);
+        if (debug) emu_log("[HBIOS EXTSLICE] Memory disk unit 0x%02X, no slices\n", disk_unit);
       } else if (hd_idx != 0xFF && hd_idx < 16 && disks[hd_idx].is_open) {
         HBDisk& disk = disks[hd_idx];
 
@@ -1772,7 +1831,7 @@ void HBIOSDispatch::handleEXT() {
                   disk.slice_size = 16384;  // hd1k: 8MB slices
                   disk.is_hd1k = true;
                   detected_format = true;
-                  emu_log("[HBIOS EXTSLICE] Detected hd1k format (0x2E partition), LBA %u\n", part_lba);
+                  if (debug) emu_log("[HBIOS EXTSLICE] Detected hd1k format (0x2E partition), LBA %u\n", part_lba);
                   break;
                 }
               }
@@ -1784,11 +1843,11 @@ void HBIOSDispatch::handleEXT() {
               disk.slice_size = 16384;
               disk.is_hd1k = true;
               detected_format = true;
-              emu_log("[HBIOS EXTSLICE] Detected hd1k format (8MB single slice)\n");
+              if (debug) emu_log("[HBIOS EXTSLICE] Detected hd1k format (8MB single slice)\n");
             }
 
             if (!detected_format) {
-              emu_log("[HBIOS EXTSLICE] Using hd512 format (size=%zu)\n", disk_size);
+              if (debug) emu_log("[HBIOS EXTSLICE] Using hd512 format (size=%zu)\n", disk_size);
             }
           }
         }
@@ -1808,7 +1867,7 @@ void HBIOSDispatch::handleEXT() {
       cpu->regs.DE.set_pair16((slice_lba >> 16) & 0xFFFF);
       cpu->regs.HL.set_pair16(slice_lba & 0xFFFF);
 
-      emu_log("[HBIOS EXTSLICE] unit=0x%02X slice=%d -> media=0x%02X LBA=%u\n",
+      if (debug) emu_log("[HBIOS EXTSLICE] unit=0x%02X slice=%d -> media=0x%02X LBA=%u\n",
               disk_unit, slice, media_id, slice_lba);
       break;
     }
@@ -1819,7 +1878,7 @@ void HBIOSDispatch::handleEXT() {
       break;
   }
 
-  cpu->regs.AF.set_high(result);
+  setResult(result);
   doRet();
 }
 
@@ -1871,7 +1930,7 @@ bool HBIOSDispatch::bootFromDevice(const char* cmd_str) {
 
       // Jump to entry point
       cpu->regs.PC.set_pair16(entry_addr);
-      cpu->regs.AF.set_high(HBR_SUCCESS);
+      setResult(HBR_SUCCESS);
       return true;
     }
   }
@@ -1966,6 +2025,6 @@ bool HBIOSDispatch::bootFromDevice(const char* cmd_str) {
 
   // Jump to entry point
   cpu->regs.PC.set_pair16(entry_addr);
-  cpu->regs.AF.set_high(HBR_SUCCESS);
+  setResult(HBR_SUCCESS);
   return true;
 }

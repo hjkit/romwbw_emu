@@ -13,7 +13,8 @@ LDFLAGS = -s WASM=1 \
           --preload-file drivec.img@/drivec
 
 # RomWBW WebAssembly build flags
-ROMWBW_CFLAGS = -O2 -std=c++11 -I$(QKZ80_SRC)
+VERSION := $(shell cat ../VERSION)
+ROMWBW_CFLAGS = -O2 -std=c++11 -I$(QKZ80_SRC) -DEMU_VERSION=\"$(VERSION)\"
 ROMWBW_LDFLAGS = -s WASM=1 \
           -s EXPORTED_FUNCTIONS='["_main","_romwbw_key_input","_romwbw_set_boot_string","_romwbw_load_rom","_romwbw_load_disk","_romwbw_get_disk_data","_romwbw_get_disk_size","_romwbw_start","_romwbw_stop","_romwbw_is_running","_romwbw_is_waiting","_romwbw_get_instruction_count","_romwbw_get_pc","_romwbw_set_debug","_romwbw_run_batch","_romwbw_autostart","_malloc","_free"]' \
           -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS","HEAPU8"]' \
@@ -83,9 +84,16 @@ deploy: cpm.js
 	mkdir -p ~/www/cpm
 	cp index.html cpm.js cpm.wasm cpm.data ~/www/cpm/
 
-deploy-romwbw: romwbw.js
+deploy-romwbw-PRODUCTION-ASK-HUMAN-FIRST: romwbw.js
 	mkdir -p ~/www/romwbw
 	sed "s/@VERSION@/$$(cat ../VERSION)/" romwbw.html > ~/www/romwbw/index.html
 	cp romwbw.js romwbw.wasm ~/www/romwbw/
+
+# Dev deploy to romwbw1 - safe for Claude to use
+deploy-dev: romwbw.js
+	mkdir -p ~/www/romwbw1
+	sed "s/@VERSION@/$$(cat ../VERSION)-dev-$$(date +%H%M%S)/" romwbw.html > ~/www/romwbw1/index.html
+	cp romwbw.js romwbw.wasm ~/www/romwbw1/
+	@echo "Deployed to ~/www/romwbw1/ - NOT production"
 
 .PHONY: all clean serve serve-romwbw deploy deploy-romwbw

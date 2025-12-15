@@ -16,6 +16,11 @@
 #include <cstring>
 #include <string>
 
+// Version string - set by Makefile from VERSION file
+#ifndef EMU_VERSION
+#define EMU_VERSION "dev"
+#endif
+
 // Use banked_mem as cpm_mem for RomWBW
 using cpm_mem = banked_mem;
 
@@ -29,7 +34,6 @@ struct EmulatorState {
   HBIOSDispatch hbios;
 
   bool running = false;
-  bool waiting_for_input = false;
   bool debug = false;
 
   // Counters
@@ -114,9 +118,6 @@ static void handle_out(uint8_t port, uint8_t value) {
       break;
 
     case 0xEF:  // HBIOS dispatch port
-      // Log all dispatch calls to trace boot issues
-      emu_log("[OUT 0xEF] dispatch B=0x%02X C=%d\n",
-              emu->cpu.regs.BC.get_high(), emu->cpu.regs.BC.get_low());
       emu->hbios.handlePortDispatch();
       break;
   }
@@ -127,7 +128,7 @@ static void handle_out(uint8_t port, uint8_t value) {
 //=============================================================================
 
 static void run_batch() {
-  if (!emu->running || emu->waiting_for_input) return;
+  if (!emu->running || emu->hbios.isWaitingForInput()) return;
 
   emu->batch_count++;
   // Log first few batches and then every 100th batch (only in debug mode)
@@ -136,13 +137,12 @@ static void run_batch() {
             emu->batch_count, emu->cpu.regs.PC.get_pair16(), emu->instruction_count);
   }
 
-  for (int i = 0; i < 50000 && emu->running && !emu->waiting_for_input; i++) {
+  for (int i = 0; i < 50000 && emu->running && !emu->hbios.isWaitingForInput(); i++) {
     uint16_t pc = emu->cpu.regs.PC.get_pair16();
     uint8_t opcode = emu->memory.fetch_mem(pc) & 0xFF;
 
     // Check for HBIOS trap
     if (emu->hbios.checkTrap(pc)) {
-      emu_log("[TRAP] PC=0x%04X B=0x%02X\n", pc, emu->cpu.regs.BC.get_high());
       int trap_type = emu->hbios.getTrapType(pc);
       if (!emu->hbios.handleCall(trap_type)) {
         emu_error("[HBIOS] Failed to handle trap at 0x%04X\n", pc);
@@ -199,7 +199,7 @@ EMSCRIPTEN_KEEPALIVE
 void romwbw_key_input(int ch) {
   if (ch == '\n') ch = '\r';  // LF -> CR for CP/M
   emu_console_queue_char(ch);
-  if (emu) emu->waiting_for_input = false;
+  if (emu) emu->hbios.clearWaitingForInput();
 }
 
 // Set boot string for auto-boot feature
@@ -271,6 +271,9 @@ int romwbw_load_rom(const uint8_t* data, int size) {
   // Set up HBIOS identification signatures
   setup_hbios_ident();
 
+  // Initialize memory disks from HCB configuration
+  emu->hbios.initMemoryDisks();
+
   char msg[64];
   snprintf(msg, sizeof(msg), "ROM loaded: %d bytes", copy_size);
   emu_status(msg);
@@ -324,13 +327,16 @@ EMSCRIPTEN_KEEPALIVE
 void romwbw_start() {
   ensure_emu();
 
-  emu_log("[WASM] RomWBW Emulator built " __DATE__ " " __TIME__ " starting\n");
+  emu_log("[WASM] RomWBW Emulator v" EMU_VERSION " built " __DATE__ " " __TIME__ " starting\n");
 
   // Set Z80 mode
   emu->cpu.set_cpu_mode(qkz80::MODE_Z80);
 
   // Register reset callback for SYSRESET (REBOOT command)
   emu->hbios.setResetCallback(handle_sysreset);
+
+  // Populate disk unit table in HCB so romldr can discover disks
+  emu->hbios.populateDiskUnitTable();
 
   // Reset CPU and start at ROM address 0
   emu->cpu.regs.AF.set_pair16(0);
@@ -348,7 +354,7 @@ void romwbw_start() {
   emu->io_out_count = 0;
 
   emu->running = true;
-  emu->waiting_for_input = false;
+  emu->hbios.clearWaitingForInput();
 
   emu_status("RomWBW starting...");
 }
@@ -368,7 +374,7 @@ int romwbw_is_running() {
 // Check if waiting for input
 EMSCRIPTEN_KEEPALIVE
 int romwbw_is_waiting() {
-  return (emu && emu->waiting_for_input) ? 1 : 0;
+  return (emu && emu->hbios.isWaitingForInput()) ? 1 : 0;
 }
 
 // Get instruction count
@@ -439,6 +445,9 @@ int romwbw_autostart() {
 
   // Set up HBIOS identification signatures
   setup_hbios_ident();
+
+  // Initialize memory disks from HCB configuration
+  emu->hbios.initMemoryDisks();
 
   // Load disk if present
   f = fopen("/hd0.img", "rb");

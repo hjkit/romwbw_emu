@@ -291,6 +291,11 @@ public:
   // Memory disk initialization (call after ROM is loaded)
   void initMemoryDisks();
 
+  // Populate disk unit table in HCB (call after disks are loaded)
+  // This updates the HCB at 0x160 (HCB+0x60) with disk device info
+  // so romldr and other tools can discover available disks
+  void populateDiskUnitTable();
+
   // ROM application management
   void addRomApp(const std::string& name, const std::string& path, char key);
   void clearRomApps();
@@ -433,6 +438,9 @@ private:
 
   // ROM applications
   std::vector<HBRomApp> rom_apps;
+
+  // Helper: set result code and Z flag for HBIOS return
+  void setResult(uint8_t result);
 
   // Helper: perform RET instruction (pop PC from stack)
   void doRet();
