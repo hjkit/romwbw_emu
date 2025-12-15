@@ -30,10 +30,14 @@ Somewhere in steps 4-5, something isn't working.
 - `[KEY]` logging in HTML onKey handler
 - `[CIOIST]` logging when has_input=true
 - `[CIOIN]` logging when character is read
+- `[QUEUE]` logging when char queued (emu_io_wasm.cc:149)
+- `[HAS_INPUT]` logging when queue checked (emu_io_wasm.cc:128)
+- `[READ_CHAR]` logging when char read (emu_io_wasm.cc:142)
 
 ## Files Changed (uncommitted)
 - `src/hbios_dispatch.cc` - Z flag fix via setResult(), debug logging
 - `src/hbios_dispatch.h` - setResult() declaration
+- `src/emu_io_wasm.cc` - Queue/has_input/read_char debug logging
 - `web/romwbw_web.cc` - Use hbios.isWaitingForInput() instead of local flag
 - `web/romwbw.html` - Key debug logging
 - `web/Makefile` - Timestamp in dev deploy
@@ -41,10 +45,17 @@ Somewhere in steps 4-5, something isn't working.
 - `cpmemu/src/qkz80_reg_set.h` - set_flag_bits/clear_flag_bits declarations
 
 ## Next Steps
-1. Rebuild and test with debug logging
-2. Check if CIOIST ever sees input ready
-3. Check if CIOIN ever gets called after key press
-4. May need to examine boot loader code to understand its input loop
+1. ✅ Rebuilt with enhanced debug logging in emu_io_wasm.cc
+2. Test at ~/www/romwbw1/ - open browser console for logs
+3. Look for these log patterns when pressing a key:
+   - `[KEY] char=XX` - JS received key
+   - `[QUEUE] Added char XX, queue size now 1` - Char added to queue
+   - `[HAS_INPUT] queue_size=1 returning=true` - Queue check finds char
+   - `[CIOIST] has_input=true` - HBIOS sees input ready
+   - `[CIOIN] read char=XX` or `[READ_CHAR] read char XX` - Char consumed
+4. If [QUEUE] shows char added but [HAS_INPUT] never shows queue_size>0,
+   there may be multiple queue instances (static linkage issue)
+5. May need to examine boot loader code to understand its input loop
 
 ## Version
 1.17 (with HHMMSS timestamp in dev builds)
