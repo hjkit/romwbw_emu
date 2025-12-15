@@ -143,6 +143,83 @@ void emu_disk_close(emu_disk_handle disk);
 
 ---
 
+## WASM Input Issues (December 2024)
+
+The WebAssembly version had keyboard input hanging at the boot prompt. These issues may affect iOS/Mac builds too.
+
+### Problem 1: Z Flag on CIOIST
+
+**Symptom:** Boot loader prompts for input but never reads characters, even when keys are pressed.
+
+**Root cause:** CIOIST (input status) was returning A=0 (HBR_SUCCESS) via `setResult()`, which sets Z=1 when result is 0. But the boot loader checks the **Z flag** to determine if input is available:
+- Z=0 (NZ) = input available
+- Z=1 (Z) = no input
+
+**Fix:** Return the character count in result instead of success code:
+```cpp
+case HBF_CIOIST: {
+  bool has_input = emu_console_has_input();
+  result = has_input ? 1 : 0;  // Count of chars waiting
+  break;  // setResult(result) sets Z based on this
+}
+```
+
+**Verification:** Add debug logging to see if CIOIST returns and CIOIN is called. If CIOIST keeps returning but CIOIN never fires, it's the Z flag.
+
+### Problem 2: Drive Map Not Populated
+
+**Symptom:** Only 1 drive letter per disk instead of 4 slices (shows C: D: instead of C: D: E: F: G: H:).
+
+**Root cause:** The drive map (DRVMAP at HCB+0x20) wasn't being populated. CBIOS uses this table to map drive letters to disk unit/slice pairs.
+
+**Fix:** Add drive map population in `populateDiskUnitTable()`:
+```cpp
+const uint16_t DRVMAP_BASE = 0x120;  // HCB+0x20
+// Assign 4 slices per hard disk
+for (int slice = 0; slice < 4; slice++) {
+  uint8_t map_val = ((slice & 0x0F) << 4) | (unit & 0x0F);
+  memory->write_bank(0x00, DRVMAP_BASE + drive_letter, map_val);
+  memory->write_bank(0x80, DRVMAP_BASE + drive_letter, map_val);
+  drive_letter++;
+}
+```
+
+### Problem 3: Console Newline Handling
+
+**Symptom:** Output appears on same line or has no visible line breaks.
+
+**Root cause:** CP/M sends `\r\n`. C++ code strips `\r`. But xterm.js (and possibly iOS terminal views) need both CR and LF for proper newlines.
+
+**Fix for WebAssembly:**
+```javascript
+Module.onConsoleOutput = function(ch) {
+  if (ch === 13) {  // CR
+    term.write('\r');
+  } else if (ch === 10) {  // LF
+    term.write('\r\n');  // LF needs CR+LF for xterm.js
+  } else if (ch >= 32 && ch < 127) {
+    term.write(String.fromCharCode(ch));
+  }
+};
+```
+
+**iOS/Mac:** Check if your terminal view expects `\r\n` and handle accordingly. The C++ layer strips CR, so you may need to restore it.
+
+### Problem 4: Hardware Port Handlers
+
+**Symptom:** Confusion about which ports to implement.
+
+**Root cause:** We incorrectly added hardware UART port handlers (0x68/0x6D) which violated project guidelines.
+
+**Correct approach:** Only these ports should be handled:
+- `0x78/0x7C` - Bank select (memory banking)
+- `0xEE` - EMU signal port (HBIOS dispatch mode)
+- `0xEF` - HBIOS dispatch port
+
+All HBIOS functionality goes through port 0xEF dispatch, not hardware emulation.
+
+---
+
 ## Testing Checklist
 
 After updating, verify:
