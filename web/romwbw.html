@@ -196,9 +196,9 @@
     // Console output from emulator
     Module.onConsoleOutput = function(ch) {
       if (ch === 13) {  // CR
-        term.write('\r\n');
-      } else if (ch === 10) {  // LF - ignore (CR already did newline)
-        // Do nothing
+        term.write('\r');  // Just carriage return
+      } else if (ch === 10) {  // LF
+        term.write('\r\n');  // LF needs CR+LF for xterm
       } else if (ch === 8) {  // Backspace
         term.write('\b \b');
       } else if (ch >= 32 && ch < 127) {
@@ -377,9 +377,7 @@
           if (ch < 0) ch = 0;
           if (ch > 31) ch = 31;
         }
-        console.log('[KEY] char=' + ch + ' waiting=' + Module._romwbw_is_waiting());
         Module._romwbw_key_input(ch);
-        console.log('[KEY] after input waiting=' + Module._romwbw_is_waiting());
       }
     });
 
@@ -494,7 +492,7 @@
     startBtn.addEventListener('click', async function() {
       startBtn.disabled = true;
       term.clear();
-      term.writeln('RomWBW Emulator - WebAssembly Edition');
+      term.writeln('RomWBW Emulator v' + EMU_VERSION);
       term.writeln('');
 
       // Auto-load default ROM if none loaded

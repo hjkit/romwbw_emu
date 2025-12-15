@@ -66,19 +66,6 @@ static uint8_t handle_in(uint8_t port) {
   uint8_t result = 0xFF;
 
   switch (port) {
-    case 0x68:  // UART data
-      if (emu_console_has_input()) {
-        result = emu_console_read_char() & 0xFF;
-      } else {
-        result = 0;
-      }
-      break;
-
-    case 0x6D:  // UART status (SSER)
-      // Bit 0: RX ready, Bit 5: TX empty
-      result = (emu_console_has_input() ? 0x01 : 0x00) | 0x20;
-      break;
-
     case 0x78:  // Bank register
     case 0x7C:
       result = emu->memory.get_current_bank();
@@ -104,7 +91,7 @@ static void handle_out(uint8_t port, uint8_t value) {
     emu->io_out_count++;
   }
   switch (port) {
-    case 0x68:  // UART data
+    case 0x68:  // UART data output (for echo)
       emu_console_write_char(value);
       break;
 

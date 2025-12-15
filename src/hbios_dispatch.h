@@ -324,6 +324,12 @@ public:
   // Dispatches based on function code in B register
   bool handleMainEntry();
 
+  // Handle bank call at 0xFFF9 (used for PRTSUM etc.)
+  bool handleBankCall();
+
+  // Handle PRTSUM - print device summary (called by boot loader 'D' command)
+  void handlePRTSUM();
+
   // Handle HBIOS dispatch triggered by OUT to port 0xEF
   // This is the unified entry point for all platforms (CLI, web, iOS, Mac)
   // Sets skip_ret=true since Z80 proxy has its own RET instruction

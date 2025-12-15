@@ -252,11 +252,49 @@ void HBIOSDispatch::populateDiskUnitTable() {
     }
   }
 
-  // Update device count at HCB+0x0C (CB_DEVCNT)
-  memory->write_bank(0x00, 0x10C, disk_idx);
-  memory->write_bank(0x80, 0x10C, disk_idx);
+  // Populate drive map at HCB+0x20 (0x120)
+  // Format: each byte = (slice << 4) | unit
+  // Drive letters A-P map to bytes 0x120-0x12F
+  // Value 0xFF = no drive assigned
+  const uint16_t DRVMAP_BASE = 0x120;  // HCB+0x20
+  int drive_letter = 0;  // 0=A, 1=B, etc.
 
-  emu_log("[DISKUT] Populated %d disk entries in HCB\n", disk_idx);
+  // First, mark all drive map entries as unused (0xFF)
+  for (int i = 0; i < 16; i++) {
+    memory->write_bank(0x00, DRVMAP_BASE + i, 0xFF);
+    memory->write_bank(0x80, DRVMAP_BASE + i, 0xFF);
+  }
+
+  // Assign memory disks first (A: = MD0, B: = MD1)
+  for (int i = 0; i < 2 && drive_letter < 16; i++) {
+    if (md_disks[i].is_enabled) {
+      uint8_t map_val = (0 << 4) | i;  // slice 0, unit i
+      memory->write_bank(0x00, DRVMAP_BASE + drive_letter, map_val);
+      memory->write_bank(0x80, DRVMAP_BASE + drive_letter, map_val);
+      drive_letter++;
+    }
+  }
+
+  // Assign hard disk slices (4 slices per disk, matching standard RomWBW)
+  for (int hd = 0; hd < 16 && drive_letter < 16; hd++) {
+    if (disks[hd].is_open) {
+      // Unit number: HD0 = unit 2, HD1 = unit 3, etc.
+      int unit = hd + 2;
+      // Assign 4 slices per disk
+      for (int slice = 0; slice < 4 && drive_letter < 16; slice++) {
+        uint8_t map_val = ((slice & 0x0F) << 4) | (unit & 0x0F);
+        memory->write_bank(0x00, DRVMAP_BASE + drive_letter, map_val);
+        memory->write_bank(0x80, DRVMAP_BASE + drive_letter, map_val);
+        drive_letter++;
+      }
+    }
+  }
+
+  // Update device count at HCB+0x0C (CB_DEVCNT) to match number of logical drives
+  memory->write_bank(0x00, 0x10C, drive_letter);
+  memory->write_bank(0x80, 0x10C, drive_letter);
+
+  emu_log("[DISKUT] Populated %d disk entries, %d drive letters in HCB\n", disk_idx, drive_letter);
 }
 
 //=============================================================================
@@ -408,6 +446,9 @@ bool HBIOSDispatch::checkTrap(uint16_t pc) const {
   // Main entry point (0xFFF0 by default)
   if (pc == main_entry) return true;
 
+  // Bank call entry point (0xFFF9) - used for PRTSUM etc.
+  if (pc == 0xFFF9) return true;
+
   // Per-handler dispatch addresses (optional)
   if (pc == cio_dispatch && cio_dispatch != 0) return true;
   if (pc == dio_dispatch && dio_dispatch != 0) return true;
@@ -421,6 +462,9 @@ bool HBIOSDispatch::checkTrap(uint16_t pc) const {
 int HBIOSDispatch::getTrapType(uint16_t pc) const {
   // Main entry uses function code in B register
   if (pc == main_entry) return -2;  // Special: dispatch by B register
+
+  // Bank call (0xFFF9) - used for PRTSUM etc.
+  if (pc == 0xFFF9) return -3;  // Special: bank call
 
   if (pc == cio_dispatch && cio_dispatch != 0) return 0;
   if (pc == dio_dispatch && dio_dispatch != 0) return 1;
@@ -446,7 +490,8 @@ int HBIOSDispatch::getTrapTypeFromFunc(uint8_t func) {
 
 bool HBIOSDispatch::handleCall(int trap_type) {
   switch (trap_type) {
-    case -2: return handleMainEntry();  // Dispatch by B register
+    case -3: return handleBankCall();    // Bank call (0xFFF9)
+    case -2: return handleMainEntry();   // Dispatch by B register
     case 0: handleCIO(); break;
     case 1: handleDIO(); break;
     case 2: handleRTC(); break;
@@ -483,6 +528,72 @@ bool HBIOSDispatch::handleMainEntry() {
       doRet();
       return true;
   }
+}
+
+//=============================================================================
+// Bank Call (0xFFF9) - handles PRTSUM and other bank-switched calls
+//=============================================================================
+
+bool HBIOSDispatch::handleBankCall() {
+  if (!cpu) return false;
+
+  uint16_t ix = cpu->regs.IX.get_pair16();
+
+  if (debug) {
+    emu_log("[HB_BNKCALL] IX=0x%04X A=0x%02X\n", ix, cpu->regs.AF.get_high());
+  }
+
+  if (ix == 0x0406) {  // PRTSUM - Print device summary
+    handlePRTSUM();
+    doRet();
+    return true;
+  }
+
+  // Unknown bank call - just return (let the RET stub execute)
+  doRet();
+  return true;
+}
+
+void HBIOSDispatch::handlePRTSUM() {
+  // Print device summary (called by romldr 'd' command)
+  const char* header = "\r\nDisk Device Summary\r\n\r\n";
+  for (const char* p = header; *p; p++) emu_console_write_char(*p);
+
+  const char* hdr_line = " Unit Dev       Type    Capacity\r\n";
+  for (const char* p = hdr_line; *p; p++) emu_console_write_char(*p);
+
+  const char* hdr_sep = " ---- --------- ------- --------\r\n";
+  for (const char* p = hdr_sep; *p; p++) emu_console_write_char(*p);
+
+  int unit_num = 0;
+  char line[80];
+
+  // Print memory disks
+  for (int i = 0; i < 2; i++) {
+    if (md_disks[i].is_enabled) {
+      const char* type = md_disks[i].is_rom ? "ROM" : "RAM";
+      uint32_t size_kb = md_disks[i].num_banks * 32;
+      snprintf(line, sizeof(line), "   %2d MD%d       %-7s %4uKB\r\n",
+               unit_num, i, type, size_kb);
+      for (const char* p = line; *p; p++) emu_console_write_char(*p);
+      unit_num++;
+    }
+  }
+
+  // Print hard disks
+  for (int i = 0; i < 16; i++) {
+    if (disks[i].is_open) {
+      uint32_t size_mb = (uint32_t)(disks[i].size / (1024 * 1024));
+      snprintf(line, sizeof(line), "   %2d HDSK%d     Hard    %4uMB\r\n",
+               unit_num, i, size_mb);
+      for (const char* p = line; *p; p++) emu_console_write_char(*p);
+      unit_num++;
+    }
+  }
+
+  // Print footer
+  emu_console_write_char('\r');
+  emu_console_write_char('\n');
 }
 
 //=============================================================================
@@ -552,7 +663,6 @@ void HBIOSDispatch::handleCIO() {
   switch (func) {
     case HBF_CIOIN: {
       // Read character - behavior depends on dispatch mode and platform
-      static int in_count = 0;
       if (skip_ret && blocking_allowed) {
         // Port-based dispatch on CLI - can block until input available
         while (!emu_console_has_input()) {
@@ -569,10 +679,6 @@ void HBIOSDispatch::handleCIO() {
         break;
       }
       int ch = emu_console_read_char();
-      if (in_count < 5) {
-        emu_log("[CIOIN] read char=%d (0x%02X) '%c'\n", ch, ch, (ch >= 32 && ch < 127) ? ch : '.');
-        in_count++;
-      }
       cpu->regs.DE.set_low(ch & 0xFF);
       waiting_for_input = false;
       break;
@@ -586,15 +692,10 @@ void HBIOSDispatch::handleCIO() {
     }
 
     case HBF_CIOIST: {
-      // Input status
+      // Input status - return count in A (matches CLI behavior)
       bool has_input = emu_console_has_input();
-      cpu->regs.DE.set_low(has_input ? 0xFF : 0x00);
-      static int ist_count = 0;
-      if (has_input && ist_count < 5) {
-        emu_log("[CIOIST] has_input=true, returning E=0xFF\n");
-        ist_count++;
-      }
-      break;
+      result = has_input ? 1 : 0;  // Count of chars waiting
+      break;  // Fall through to setResult(result) and doRet()
     }
 
     case HBF_CIOOST: {
@@ -960,14 +1061,18 @@ void HBIOSDispatch::handleDIO() {
 
     case HBF_DIODEVICE: {
       // Disk device info report
-      // Returns: D=device type, E=device number within type
+      // Returns: D=device type, E=device number within type, C=attributes
       // Device types: 0x00=MD (memory disk), 0x09=HDSK, 0xFF=no device
+      // Attributes: bit 5=high capacity (enables multiple slices), bit 6=removable
+      uint8_t dev_attr = 0x00;
       if (is_memdisk) {
         cpu->regs.DE.set_high(0x00);  // DIODEV_MD (memory disk)
         cpu->regs.DE.set_low(md_unit); // Device number (0=MD0, 1=MD1)
+        dev_attr = 0x00;  // Not high capacity, not removable
       } else if (is_harddisk) {
         cpu->regs.DE.set_high(0x09);  // DIODEV_HDSK (hard disk)
         cpu->regs.DE.set_low(hd_unit); // Device number within type
+        dev_attr = 0x20;  // Bit 5 = high capacity (enables multiple slices)
       } else {
         // No device at this unit - return error, don't crash
         cpu->regs.DE.set_high(0xFF);  // No device
@@ -978,9 +1083,10 @@ void HBIOSDispatch::handleDIO() {
         }
         break;
       }
+      cpu->regs.BC.set_low(dev_attr);  // C = device attributes
       if (debug) {
-        emu_log("[HBIOS DIODEVICE] Unit %d: type=0x%02X num=%d\n",
-                raw_unit, cpu->regs.DE.get_high(), cpu->regs.DE.get_low());
+        emu_log("[HBIOS DIODEVICE] Unit %d: type=0x%02X num=%d attr=0x%02X\n",
+                raw_unit, cpu->regs.DE.get_high(), cpu->regs.DE.get_low(), dev_attr);
       }
       break;
     }
