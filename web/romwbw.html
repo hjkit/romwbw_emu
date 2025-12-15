@@ -105,11 +105,10 @@
       <label>Disk 0 (C:):</label>
       <select id="disk0Select" style="margin-right:4px;">
         <option value="">-- Select Disk (hd1k format) --</option>
-        <option value="hd1k_games.img" selected>hd1k_games.img (Classic games: Zork, Adventure)</option>
-        <option value="hd1k_infocom.img">hd1k_infocom.img (Infocom: Zork 1-3, H2G2)</option>
+        <option value="hd1k_combo.img" selected>hd1k_combo.img (49MB combo disk)</option>
+        <option value="hd1k_games.img">hd1k_games.img (Classic games: Zork, Adventure)</option>
         <option value="hd1k_cpm22.img">hd1k_cpm22.img (CP/M 2.2)</option>
         <option value="hd1k_zsdos.img">hd1k_zsdos.img (ZSDOS)</option>
-        <option value="hd1k_combo.img">hd1k_combo.img (49MB combo disk)</option>
       </select>
       <input type="file" id="disk0File" accept=".img,.dsk" style="width:140px;">
       <button id="downloadDisk0Btn" disabled title="Download modified disk">↓</button>
@@ -118,8 +117,7 @@
       <label>Disk 1 (D:):</label>
       <select id="disk1Select" style="margin-right:4px;">
         <option value="">-- None --</option>
-        <option value="hd1k_games.img">hd1k_games.img (Classic games)</option>
-        <option value="hd1k_infocom.img">hd1k_infocom.img (Infocom games)</option>
+        <option value="hd1k_games.img" selected>hd1k_games.img (Classic games)</option>
         <option value="hd1k_cpm22.img">hd1k_cpm22.img (CP/M 2.2)</option>
         <option value="hd1k_zsdos.img">hd1k_zsdos.img (ZSDOS)</option>
       </select>
@@ -511,10 +509,10 @@
         }
       }
 
-      // Auto-load default disk if none loaded
+      // Auto-load default disk 0 if none loaded
       if (!diskLoaded[0]) {
-        const defaultDisk = 'hd1k_games.img';
-        statusDiv.textContent = 'Loading default disk...';
+        const defaultDisk = 'hd1k_combo.img';
+        statusDiv.textContent = 'Loading default disk 0...';
         try {
           const response = await fetch(defaultDisk);
           const buf = await response.arrayBuffer();
@@ -522,7 +520,22 @@
           document.getElementById('disk0Select').value = defaultDisk;
         } catch (err) {
           // Disk is optional, just log warning
-          console.log('Could not load default disk:', err);
+          console.log('Could not load default disk 0:', err);
+        }
+      }
+
+      // Auto-load default disk 1 if none loaded
+      if (!diskLoaded[1]) {
+        const defaultDisk1 = 'hd1k_games.img';
+        statusDiv.textContent = 'Loading default disk 1...';
+        try {
+          const response = await fetch(defaultDisk1);
+          const buf = await response.arrayBuffer();
+          loadDiskData(1, new Uint8Array(buf), defaultDisk1);
+          document.getElementById('disk1Select').value = defaultDisk1;
+        } catch (err) {
+          // Disk is optional, just log warning
+          console.log('Could not load default disk 1:', err);
         }
       }
 
