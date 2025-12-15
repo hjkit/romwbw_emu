@@ -95,7 +95,7 @@
       <label>ROM:</label>
       <select id="romSelect" style="margin-right:4px;">
         <option value="">-- Select ROM --</option>
-        <option value="emu_romwbw.rom" selected>emu_romwbw.rom (Emulator HBIOS - recommended)</option>
+        <option value="emu_avw.rom" selected>emu_avw.rom (Emulator HBIOS - recommended)</option>
         <option value="SBC_simh_std.rom">SBC_simh_std.rom (SIMH hardware)</option>
       </select>
       <input type="file" id="romFile" accept=".rom,.bin" style="width:180px;">
@@ -141,7 +141,7 @@
     <p>2. At <code>C&gt;</code> prompt, type <code>DIR</code> to see files, or run a game like <code>ZORK1</code></p>
 
     <h3>ROM Types</h3>
-    <p><code>emu_romwbw.rom</code> - <strong>Recommended.</strong> Uses emulator's C++ HBIOS. Works with all hd1k disk images.</p>
+    <p><code>emu_avw.rom</code> - <strong>Recommended.</strong> Uses emulator's C++ HBIOS. Works with all hd1k disk images.</p>
     <p><code>SBC_simh_std.rom</code> - Original SIMH ROM. Requires SIMH hardware emulation (may not boot).</p>
 
     <h3>Disk Images (hd1k format, 8MB)</h3>
@@ -495,7 +495,7 @@
 
       // Auto-load default ROM if none loaded
       if (!romLoaded) {
-        const defaultRom = 'emu_romwbw.rom';
+        const defaultRom = 'emu_avw.rom';
         statusDiv.textContent = 'Loading default ROM...';
         try {
           const response = await fetch(defaultRom);
