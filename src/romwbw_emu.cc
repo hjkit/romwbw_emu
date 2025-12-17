@@ -3811,7 +3811,7 @@ void print_usage(const char* prog) {
   fprintf(stderr, "Examples:\n");
   fprintf(stderr, "  %s --romwbw=roms/emu_avw.rom\n", prog);
   fprintf(stderr, "  %s --romwbw=roms/emu_avw.rom --disk0=disks/hd1k_combo.img\n", prog);
-  fprintf(stderr, "  %s --romwbw=roms/emu_avw.rom --disk0=disks/z80cpm_tools.img\n", prog);
+  fprintf(stderr, "  %s --romwbw=roms/emu_avw.rom --disk0=disks/hd1k_infocom.img:1\n", prog);
 }
 
 int main(int argc, char** argv) {

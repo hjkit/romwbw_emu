@@ -14,7 +14,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEFAULT_SOURCE="/Users/wohl/src/ioscpm/release_assets/hd1k_infocom.img"
 DEFAULT_OUTPUT="${SCRIPT_DIR}/hd1k_infocom.img"
 DISKDEFS="${DISKDEFS:-/Users/wohl/esrc/RomWBW-v3.5.1/Tools/cpmtools/diskdefs}"
-TEMPLATE_DISK="${SCRIPT_DIR}/z80cpm_tools.img"
+# Template disk for boot sector - use combo disk (boot sector at 1MB offset)
+TEMPLATE_DISK="${SCRIPT_DIR}/hd1k_combo.img"
+TEMPLATE_OFFSET=1048576  # 1MB prefix in combo disk
 
 # Parse arguments
 SOURCE_DISK="${1:-$DEFAULT_SOURCE}"
@@ -87,7 +89,8 @@ mkfs.cpm -f wbw_hd1k "$OUTPUT_DISK" 2>/dev/null
 
 # Copy boot sector from template disk (first 32 sectors = 16KB)
 # This must be done AFTER mkfs.cpm because mkfs.cpm fills with 0xE5
-dd if="$TEMPLATE_DISK" of="$OUTPUT_DISK" bs=512 count=32 conv=notrunc 2>/dev/null
+# For combo disk, skip the 1MB MBR prefix to get slice 0's boot sector
+dd if="$TEMPLATE_DISK" of="$OUTPUT_DISK" bs=512 skip=$((TEMPLATE_OFFSET / 512)) count=32 conv=notrunc 2>/dev/null
 
 # Clear the MBR partition table and signature (we only need the boot code)
 # Partition table is at 0x1BE-0x1FD (64 bytes), signature at 0x1FE-0x1FF
