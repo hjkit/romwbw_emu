@@ -45,13 +45,13 @@ serve: romwbw.js
 
 deploy-romwbw-PRODUCTION-ASK-HUMAN-FIRST: romwbw.js
 	mkdir -p ~/www/romwbw
-	sed "s/@VERSION@/$$(cat ../VERSION)/" romwbw.html > ~/www/romwbw/index.html
+	sed "s/@VERSION@/$$(cat ../VERSION)/" romwbw.html-template > ~/www/romwbw/index.html
 	cp romwbw.js romwbw.wasm ~/www/romwbw/
 
 # Dev deploy to romwbw1 - safe for Claude to use
 deploy-dev: romwbw.js
 	mkdir -p ~/www/romwbw1
-	sed "s/@VERSION@/$$(cat ../VERSION)-dev-$$(date +%H%M%S)/" romwbw.html > ~/www/romwbw1/index.html
+	sed "s/@VERSION@/$$(cat ../VERSION)-dev-$$(date +%H%M%S)/" romwbw.html-template > ~/www/romwbw1/index.html
 	cp romwbw.js romwbw.wasm ~/www/romwbw1/
 	@echo "Deployed to ~/www/romwbw1/ - NOT production"
 
