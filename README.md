@@ -12,10 +12,10 @@ A hardware-level Z80 emulator for running RomWBW and CP/M from ROM and disk imag
 cd src && make
 
 # Run RomWBW (boots to ROM disk)
-./romwbw_emu --romwbw ../roms/emu_romwbw.rom
+./romwbw_emu --romwbw=../roms/emu_avw.rom
 
-# Run with a hard disk image (boots CP/M from disk)
-./romwbw_emu --romwbw ../roms/emu_romwbw.rom --hbdisk0=hd1k_combo.img --boot=2
+# Run with a hard disk image
+./romwbw_emu --romwbw=../roms/emu_avw.rom --disk0=../disks/hd1k_combo.img
 ```
 
 At the RomWBW boot menu, press `2` to boot from disk, or `C` for CP/M from ROM.
@@ -30,7 +30,7 @@ curl -LO https://github.com/avwohl/romwbw_emu/releases/latest/download/romwbw-em
 sudo dpkg -i romwbw-emu_0.1.0_amd64.deb
 
 # Run with included ROM
-romwbw_emu --romwbw /usr/share/romwbw_emu/roms/SBC_simh_std.rom
+romwbw_emu --romwbw=/usr/share/romwbw_emu/roms/emu_avw.rom
 ```
 
 For ARM64 systems, use `romwbw-emu_0.1.0_arm64.deb` instead.
@@ -43,7 +43,7 @@ curl -LO https://github.com/avwohl/romwbw_emu/releases/latest/download/romwbw-em
 sudo rpm -i romwbw-emu-0.1.0-1.x86_64.rpm
 
 # Run with included ROM
-romwbw_emu --romwbw /usr/share/romwbw_emu/roms/SBC_simh_std.rom
+romwbw_emu --romwbw=/usr/share/romwbw_emu/roms/emu_avw.rom
 ```
 
 For ARM64 systems, use `romwbw-emu-0.1.0-1.aarch64.rpm` instead.
@@ -79,8 +79,8 @@ Download disk images from [RomWBW releases](https://github.com/wwarthen/RomWBW/r
 
 - `A:` - RAM disk (MD0)
 - `B:` - ROM disk (MD1)
-- `C:` - First hard disk (--hbdisk0)
-- `D:` - Second hard disk (--hbdisk1)
+- `C:` - First hard disk (--disk0)
+- `D:` - Second hard disk (--disk1)
 
 ## WebAssembly Version
 
@@ -121,21 +121,18 @@ make           # Requires emscripten
 ## Command Line Options
 
 ```
-./romwbw_emu --romwbw <rom.rom> [options]
+./romwbw_emu --romwbw=<rom.rom> [options]
 
 Options:
-  --romwbw FILE     Enable RomWBW mode with ROM file
+  --romwbw=FILE     Enable RomWBW mode with ROM file
   --debug           Enable debug output
   --strict-io       Halt on unexpected I/O ports
 
 Disk options:
-  --hbdisk0=FILE    Attach disk image to unit 0 (drive C:)
-  --hbdisk1=FILE    Attach disk image to unit 1 (drive D:)
-  --hdsk0=FILE      Attach SIMH HDSK disk (port 0xFD protocol)
-  --hdsk1=FILE      Attach SIMH HDSK disk (port 0xFD protocol)
+  --disk0=FILE      Attach disk image to slot 0 (drives C:-F:)
+  --disk1=FILE      Attach disk image to slot 1 (drives G:-J:)
 
 Other options:
-  --boot=STRING     Auto-type at boot prompt (e.g., '2' for disk)
   --escape=CHAR     Console escape char (default ^E)
   --trace=FILE      Write execution trace
   --symbols=FILE    Load symbol table (.sym)
@@ -145,14 +142,13 @@ Other options:
 
 ```bash
 # Boot from ROM disk (default)
-./romwbw_emu --romwbw emu_romwbw.rom
+./romwbw_emu --romwbw=roms/emu_avw.rom
 
-# Boot CP/M from hard disk
-./romwbw_emu --romwbw emu_romwbw.rom --hbdisk0=hd1k_combo.img --boot=2
+# Boot with hard disk attached
+./romwbw_emu --romwbw=roms/emu_avw.rom --disk0=disks/hd1k_combo.img
 
-# Play Zork!
-./romwbw_emu --romwbw emu_romwbw.rom --hbdisk0=hd1k_infocom.img --boot=2
-# Then: C: and ZORK1
+# Boot with tools disk
+./romwbw_emu --romwbw=roms/emu_avw.rom --disk0=disks/z80cpm_tools.img
 ```
 
 ## Project Structure
