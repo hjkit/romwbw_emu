@@ -3705,11 +3705,11 @@ static const char* validate_disk_image(const char* path, size_t* out_size = null
 
 void print_usage(const char* prog) {
   fprintf(stderr, "RomWBW Emulator v%s (%s)\n", EMU_VERSION, EMU_VERSION_DATE);
-  fprintf(stderr, "Usage: %s --romwbw <rom.rom> [options]\n", prog);
+  fprintf(stderr, "Usage: %s --romwbw=<rom.rom> [options]\n", prog);
   fprintf(stderr, "\n");
   fprintf(stderr, "Options:\n");
   fprintf(stderr, "  --version, -v     Show version information\n");
-  fprintf(stderr, "  --romwbw FILE     Enable RomWBW mode with ROM file (512KB ROM+RAM, Z80)\n");
+  fprintf(stderr, "  --romwbw=FILE     Enable RomWBW mode with ROM file (512KB ROM+RAM, Z80)\n");
   fprintf(stderr, "  --strict-io       Halt on unexpected I/O ports (for debugging)\n");
   fprintf(stderr, "  --debug           Enable debug output\n");
   fprintf(stderr, "\n");
@@ -3734,9 +3734,9 @@ void print_usage(const char* prog) {
   fprintf(stderr, "  Use 'quit' to exit.\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Examples:\n");
-  fprintf(stderr, "  %s --romwbw roms/emu_romwbw.rom\n", prog);
-  fprintf(stderr, "  %s --romwbw roms/emu_romwbw.rom --disk0=disks/hd1k_combo.img\n", prog);
-  fprintf(stderr, "  %s --romwbw roms/emu_romwbw.rom --disk0=disks/z80cpm_tools.img\n", prog);
+  fprintf(stderr, "  %s --romwbw=roms/emu_avw.rom\n", prog);
+  fprintf(stderr, "  %s --romwbw=roms/emu_avw.rom --disk0=disks/hd1k_combo.img\n", prog);
+  fprintf(stderr, "  %s --romwbw=roms/emu_avw.rom --disk0=disks/z80cpm_tools.img\n", prog);
 }
 
 int main(int argc, char** argv) {
@@ -3778,8 +3778,9 @@ int main(int argc, char** argv) {
       return 0;
     } else if (strcmp(argv[i], "--debug") == 0) {
       debug = true;
-    } else if (strcmp(argv[i], "--romwbw") == 0) {
+    } else if (strncmp(argv[i], "--romwbw=", 9) == 0) {
       romwbw_mode = true;
+      binary = argv[i] + 9;
     } else if (strcmp(argv[i], "--strict-io") == 0) {
       strict_io_mode = true;
     } else if (strncmp(argv[i], "--sense=", 8) == 0) {
