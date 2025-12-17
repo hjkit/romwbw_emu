@@ -784,9 +784,10 @@ private:
     uint32_t partition_base_lba;  // Starting LBA of RomWBW partition (2048 for hd1k, 0 for hd512)
     uint32_t slice_size;       // Sectors per slice (16384 for hd1k, 16640 for hd512)
     bool is_hd1k;              // True if hd1k format (use MID_HDNEW), false for hd512 (MID_HD)
+    int max_slices;            // Max slices to expose (configurable, default 4)
 
     HBDiskState() : current_lba(0), image_file(nullptr), is_open(false),
-                    partition_probed(false), partition_base_lba(0), slice_size(16640), is_hd1k(false) {}
+                    partition_probed(false), partition_base_lba(0), slice_size(16640), is_hd1k(false), max_slices(4) {}
 
     ~HBDiskState() {
       if (image_file) fclose(image_file);
@@ -1070,6 +1071,14 @@ public:
     hb_disks[unit].is_open = true;
     hb_disks[unit].current_lba = 0;
     return true;
+  }
+
+  // Set max slices for a disk (used by --disk0=file:N syntax)
+  void set_disk_slice_count(int unit, int slices) {
+    if (unit < 0 || unit >= 16) return;
+    if (slices < 1) slices = 1;
+    if (slices > 8) slices = 8;
+    hb_disks[unit].max_slices = slices;
   }
 
   // Attach HDSK disk image (SIMH port 0xFD protocol)
@@ -3669,6 +3678,65 @@ static constexpr size_t HD1K_SINGLE_SIZE = 8388608;      // 8 MB exactly
 static constexpr size_t HD1K_PREFIX_SIZE = 1048576;      // 1 MB prefix
 static constexpr size_t HD512_SINGLE_SIZE = 8519680;     // 8.32 MB
 
+// Partition types
+static constexpr uint8_t PART_TYPE_ROMWBW = 0x2E;  // RomWBW hd1k partition
+static constexpr uint8_t PART_TYPE_FAT16 = 0x06;   // FAT16 (incompatible)
+static constexpr uint8_t PART_TYPE_FAT32 = 0x0B;   // FAT32 (incompatible)
+
+// Check if MBR has valid RomWBW partition or none at all
+// Returns warning message or nullptr if OK
+static const char* check_disk_mbr(const char* path, size_t size) {
+  // Only check for 8MB single-slice images - these are the problematic ones
+  if (size != HD1K_SINGLE_SIZE) {
+    return nullptr;  // Only check single-slice images
+  }
+
+  FILE* f = fopen(path, "rb");
+  if (!f) return nullptr;
+
+  uint8_t mbr[512];
+  size_t read = fread(mbr, 1, 512, f);
+  fclose(f);
+
+  if (read != 512) return nullptr;
+
+  // Check for MBR signature
+  if (mbr[510] != 0x55 || mbr[511] != 0xAA) {
+    return nullptr;  // No MBR - probably raw hd1k slice, OK
+  }
+
+  // Has MBR signature - check partition types
+  bool has_romwbw_partition = false;
+  bool has_fat_partition = false;
+
+  for (int p = 0; p < 4; p++) {
+    int offset = 0x1BE + (p * 16);
+    uint8_t ptype = mbr[offset + 4];
+    if (ptype == PART_TYPE_ROMWBW) {
+      has_romwbw_partition = true;
+    }
+    if (ptype == PART_TYPE_FAT16 || ptype == PART_TYPE_FAT32) {
+      has_fat_partition = true;
+    }
+  }
+
+  if (has_romwbw_partition) {
+    return nullptr;  // Has proper RomWBW partition, OK
+  }
+
+  if (has_fat_partition) {
+    return "WARNING: disk has FAT16/FAT32 MBR but no RomWBW partition - may not work correctly";
+  }
+
+  // Has MBR but no RomWBW partition and no FAT - check first bytes
+  // A proper hd1k slice starts with Z80 boot code (JR or JP instruction)
+  if (mbr[0] == 0x18 || mbr[0] == 0xC3) {
+    return nullptr;  // Looks like Z80 boot code - probably just has stale MBR signature
+  }
+
+  return "WARNING: disk has MBR but no RomWBW partition (0x2E) - format may be invalid";
+}
+
 // Validate disk image file - returns error message or nullptr if valid
 static const char* validate_disk_image(const char* path, size_t* out_size = nullptr) {
   FILE* f = fopen(path, "rb");
@@ -3684,7 +3752,12 @@ static const char* validate_disk_image(const char* path, size_t* out_size = null
 
   // Check for valid hd1k sizes
   if (size == HD1K_SINGLE_SIZE) {
-    return nullptr;  // Valid: single-slice hd1k (8MB)
+    // Check MBR for potential issues with single-slice images
+    const char* mbr_warning = check_disk_mbr(path, size);
+    if (mbr_warning) {
+      fprintf(stderr, "[DISK] %s: %s\n", path, mbr_warning);
+    }
+    return nullptr;  // Valid size: single-slice hd1k (8MB)
   }
 
   // Check for combo disk: 1MB prefix + N * 8MB slices
@@ -3714,8 +3787,10 @@ void print_usage(const char* prog) {
   fprintf(stderr, "  --debug           Enable debug output\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Disk options:\n");
-  fprintf(stderr, "  --disk0=FILE      Attach disk image to slot 0 (appears as drives C:-F:)\n");
-  fprintf(stderr, "  --disk1=FILE      Attach disk image to slot 1 (appears as drives G:-J:)\n");
+  fprintf(stderr, "  --disk0=FILE[:N]  Attach disk image to slot 0 (default: 4 slices -> C:-F:)\n");
+  fprintf(stderr, "  --disk1=FILE[:N]  Attach disk image to slot 1 (default: 4 slices -> G:-J:)\n");
+  fprintf(stderr, "    N = number of slices (1-8), controls how many drive letters are used\n");
+  fprintf(stderr, "    Example: --disk0=disk.img:1 uses only 1 slice (C: only)\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "  Supported disk formats (auto-detected):\n");
   fprintf(stderr, "    hd1k  - Modern RomWBW format, 8MB per slice, 1024 dir entries\n");
@@ -3755,6 +3830,7 @@ int main(int argc, char** argv) {
   bool strict_io_mode = false;
   int sense = -1;
   std::string hbios_disks[16];  // For RomWBW disk images (HBIOS dispatch)
+  int hbios_disk_slices[16] = {4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4};  // Max slices per disk (default 4)
   std::string trace_file;
   std::string symbols_file;
   std::string romldr_path;  // RomWBW romldr boot menu
@@ -3790,29 +3866,46 @@ int main(int argc, char** argv) {
       start_addr = strtol(argv[i] + 8, nullptr, 0);
       start_addr_set = true;
     } else if (strncmp(argv[i], "--disk", 6) == 0) {
-      // Parse --disk0=file, --disk1=file (preferred form)
+      // Parse --disk0=file[:slices], --disk1=file[:slices] (preferred form)
+      // slices is optional, 1-8, defaults to 4
       const char* opt = argv[i] + 6;
       int unit = -1;
-      const char* path = nullptr;
+      const char* path_start = nullptr;
       if (isdigit(opt[0]) && opt[1] == '=' && opt[2] != '\0') {
         unit = opt[0] - '0';
-        path = opt + 2;
+        path_start = opt + 2;
       } else if (isdigit(opt[0]) && isdigit(opt[1]) && opt[2] == '=' && opt[3] != '\0') {
         unit = (opt[0] - '0') * 10 + (opt[1] - '0');
-        path = opt + 3;
+        path_start = opt + 3;
       }
-      if (unit >= 0 && unit < 16 && path) {
+      if (unit >= 0 && unit < 16 && path_start) {
+        // Check for :N slice count suffix (must be at end after the file path)
+        std::string path_str(path_start);
+        int slice_count = 4;  // Default
+        size_t colon_pos = path_str.rfind(':');
+        if (colon_pos != std::string::npos && colon_pos > 0) {
+          // Check if what's after the colon is a single digit (slice count)
+          std::string suffix = path_str.substr(colon_pos + 1);
+          if (suffix.length() == 1 && isdigit(suffix[0])) {
+            int n = suffix[0] - '0';
+            if (n >= 1 && n <= 8) {
+              slice_count = n;
+              path_str = path_str.substr(0, colon_pos);
+            }
+          }
+        }
         // Validate disk image exists and has valid size
         size_t disk_size = 0;
-        const char* err = validate_disk_image(path, &disk_size);
+        const char* err = validate_disk_image(path_str.c_str(), &disk_size);
         if (err) {
-          fprintf(stderr, "Error: --disk%d=%s: %s\n", unit, path, err);
+          fprintf(stderr, "Error: --disk%d=%s: %s\n", unit, path_str.c_str(), err);
           return 1;
         }
-        hbios_disks[unit] = path;
-        fprintf(stderr, "[DISK] Validated disk%d: %s (%zu bytes)\n", unit, path, disk_size);
+        hbios_disks[unit] = path_str;
+        hbios_disk_slices[unit] = slice_count;
+        fprintf(stderr, "[DISK] Validated disk%d: %s (%zu bytes, %d slices)\n", unit, path_str.c_str(), disk_size, slice_count);
       } else {
-        fprintf(stderr, "Invalid --disk option: %s (use --disk0=file or --disk1=file)\n", argv[i]);
+        fprintf(stderr, "Invalid --disk option: %s (use --disk0=file[:slices] or --disk1=file[:slices])\n", argv[i]);
         return 1;
       }
     } else if (strncmp(argv[i], "--romapp=", 9) == 0) {
@@ -3999,6 +4092,9 @@ int main(int argc, char** argv) {
       if (!hbios_disks[i].empty()) {
         if (!emu.attach_hbios_disk(i, hbios_disks[i])) {
           fprintf(stderr, "Warning: Could not attach disk %d: %s\n", i, hbios_disks[i].c_str());
+        } else {
+          // Set the slice count for this disk
+          emu.set_disk_slice_count(i, hbios_disk_slices[i]);
         }
       }
     }
@@ -4189,14 +4285,14 @@ int main(int argc, char** argv) {
       }
 
       // Then assign hard disk slices
-      // Assign 4 drive letters (slices) per hard disk, matching standard RomWBW behavior
+      // Assign drive letters (slices) per hard disk, respecting per-disk slice limits
       for (int hd = 0; hd < 16 && drive_letter < 16; hd++) {
         if (!hbios_disks[hd].empty()) {
           // Unit number: HD0 = unit 2, HD1 = unit 3, etc.
           int unit = hd + 2;
 
-          // Assign 4 slices per disk (standard RomWBW behavior)
-          int num_slices = 4;
+          // Use per-disk slice count (configured via --disk0=file:N syntax, default 4)
+          int num_slices = hbios_disk_slices[hd];
 
           // Assign each slice to a drive letter
           for (int slice = 0; slice < num_slices && drive_letter < 16; slice++) {

@@ -142,6 +142,12 @@ void HBIOSDispatch::closeDisk(int unit) {
   disks[unit].file_backed = false;
   disks[unit].size = 0;
   disks[unit].path.clear();
+  // Reset partition detection state so new disk will be probed correctly
+  disks[unit].current_lba = 0;
+  disks[unit].partition_probed = false;
+  disks[unit].partition_base_lba = 0;
+  disks[unit].slice_size = 16640;  // Default hd512
+  disks[unit].is_hd1k = false;
 }
 
 void HBIOSDispatch::closeAllDisks() {
@@ -159,6 +165,13 @@ const HBDisk& HBIOSDispatch::getDisk(int unit) const {
   static HBDisk empty;
   if (unit < 0 || unit >= 16) return empty;
   return disks[unit];
+}
+
+void HBIOSDispatch::setDiskSliceCount(int unit, int slices) {
+  if (unit < 0 || unit >= 16) return;
+  if (slices < 1) slices = 1;
+  if (slices > 8) slices = 8;
+  disks[unit].max_slices = slices;
 }
 
 //=============================================================================
@@ -207,6 +220,9 @@ void HBIOSDispatch::initMemoryDisks() {
     emu_log("[MD] MD1 (ROM disk): banks 0x%02X-0x%02X, %uKB, %u sectors\n",
             romd_start, romd_start + romd_banks - 1, size_kb, md_disks[1].total_sectors());
   }
+
+  // Populate disk unit table so boot loader can enumerate all disks
+  populateDiskUnitTable();
 }
 
 //=============================================================================
@@ -295,13 +311,14 @@ void HBIOSDispatch::populateDiskUnitTable() {
     }
   }
 
-  // Assign hard disk slices (4 slices per disk, matching standard RomWBW)
+  // Assign hard disk slices, respecting per-disk slice limits
   for (int hd = 0; hd < 16 && drive_letter < 16; hd++) {
     if (disks[hd].is_open) {
       // Unit number: HD0 = unit 2, HD1 = unit 3, etc.
       int unit = hd + 2;
-      // Assign 4 slices per disk
-      for (int slice = 0; slice < 4 && drive_letter < 16; slice++) {
+      // Use per-disk max_slices (default 4, configurable via setDiskSliceCount)
+      int num_slices = disks[hd].max_slices;
+      for (int slice = 0; slice < num_slices && drive_letter < 16; slice++) {
         uint8_t map_val = ((slice & 0x0F) << 4) | (unit & 0x0F);
         memory->write_bank(0x00, DRVMAP_BASE + drive_letter, map_val);
         memory->write_bank(0x80, DRVMAP_BASE + drive_letter, map_val);
@@ -315,6 +332,18 @@ void HBIOSDispatch::populateDiskUnitTable() {
   memory->write_bank(0x80, 0x10C, drive_letter);
 
   emu_log("[DISKUT] Populated %d disk entries, %d drive letters in HCB\n", disk_idx, drive_letter);
+
+  // Debug: dump drive map
+  emu_log("[DISKUT] Drive map (0x120-0x12F):\n");
+  emu_log("[DISKUT]   A-H: ");
+  for (int i = 0; i < 8; i++) {
+    emu_log("0x%02X ", memory->read_bank(0x80, DRVMAP_BASE + i));
+  }
+  emu_log("\n[DISKUT]   I-P: ");
+  for (int i = 8; i < 16; i++) {
+    emu_log("0x%02X ", memory->read_bank(0x80, DRVMAP_BASE + i));
+  }
+  emu_log("\n[DISKUT] CB_DEVCNT (0x10C) = 0x%02X\n", memory->read_bank(0x80, 0x10C));
 }
 
 //=============================================================================
@@ -1361,10 +1390,14 @@ void HBIOSDispatch::handleSYS() {
       // Output: A = result, HL = address of allocated block (or 0 on failure)
       // Heap is in bank 0x80 starting after HCB (0x0200) up to 0x8000
       uint16_t size = cpu->regs.HL.get_pair16();
+      static int alloc_count = 0;
+      alloc_count++;
 
-      // Always log SYSALLOC to debug panic issues
-      if (debug) emu_log("[HBIOS SYSALLOC] REQUEST: size=0x%04X (%u) C=0x%02X DE=0x%04X heap_ptr=0x%04X heap_end=0x%04X\n",
-              size, size, subfunc, cpu->regs.DE.get_pair16(), heap_ptr, heap_end);
+      // Log first allocations and failures to debug heap issues
+      if (alloc_count <= 20 || debug) {
+        emu_log("[HBIOS SYSALLOC #%d] REQUEST: size=0x%04X (%u) heap_ptr=0x%04X free=0x%04X\n",
+                alloc_count, size, size, heap_ptr, heap_end - heap_ptr);
+      }
 
       if (heap_ptr + size <= heap_end) {
         uint16_t addr = heap_ptr;
@@ -1374,8 +1407,8 @@ void HBIOSDispatch::handleSYS() {
         cpu->regs.AF.set_low(qkz80_cpu_flags::Z);
         if (debug) emu_log("[HBIOS SYSALLOC] SUCCESS: allocated 0x%04X, new heap_ptr=0x%04X\n", addr, heap_ptr);
       } else {
-        // Out of heap memory
-        if (debug) emu_log("[HBIOS SYSALLOC] FAILED: size=%u (0x%04X) exceeds available heap (ptr=0x%04X end=0x%04X)\n",
+        // Out of heap memory - always log failures
+        emu_log("[HBIOS SYSALLOC] FAILED: size=%u (0x%04X) exceeds available heap (ptr=0x%04X end=0x%04X)\n",
                 size, size, heap_ptr, heap_end);
         cpu->regs.HL.set_pair16(0);
         // Set flags: Z=0 (failure), C=1 (error)
