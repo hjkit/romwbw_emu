@@ -39,3 +39,28 @@ When working on RomWBW integration:
 - `banked_mem` / `romwbw_mem.h` - Bank-switched memory (512KB ROM + 512KB RAM)
 - `altair_emu.cc` - Main emulator with HBIOS service handlers
 - HBIOS calls are handled by intercepting execution at specific addresses and reading/writing CPU registers directly from C++
+
+## Disk Formats (IMPORTANT)
+
+**Read `docs/DISK_FORMATS.md` before working on disk-related code.**
+
+Key points:
+- **hd1k format**: 8MB (8,388,608 bytes exactly) single-slice, or combo with 1MB MBR prefix
+- **hd512 format**: 8.32MB (8,519,680 bytes) legacy format
+- The emulator auto-detects format by:
+  1. Checking for MBR signature (0x55AA) and partition type 0x2E
+  2. If no MBR but size = exactly 8MB, assumes hd1k single-slice
+  3. Otherwise falls back to hd512
+
+**Common pitfalls:**
+- Single-slice hd1k images MUST be exactly 8,388,608 bytes for auto-detect
+- Combo disks need the 1MB MBR prefix with partition type 0x2E at offset 0x1C2
+- Use `--hbdisk0` for HBIOS disk system, NOT `--hdsk0` (that's legacy SIMH protocol)
+- cpmtools needs DISKDEFS env var pointing to RomWBW diskdefs file
+
+**cpmtools setup:**
+```bash
+export DISKDEFS="$HOME/esrc/RomWBW-v3.5.1/Tools/cpmtools/diskdefs"
+cpmls -f wbw_hd1k disk.img      # single slice
+cpmls -f wbw_hd1k_0 combo.img   # slice 0 of combo disk
+```

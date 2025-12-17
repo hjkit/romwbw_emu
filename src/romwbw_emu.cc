@@ -858,6 +858,10 @@ private:
   FILE* hdsk_files[8] = {nullptr}; // Up to 8 HDSK disk images
   std::string hdsk_paths[8];       // Paths to HDSK disk images
 
+  // Host file transfer state (HBIOS extension 0xE1-0xE5)
+  FILE* host_read_file = nullptr;   // Currently open host file for reading
+  FILE* host_write_file = nullptr;  // Currently open host file for writing
+
 public:
   AltairEmulator(qkz80* acpu, cpm_mem* amem, bool adebug = false, bool aromwbw = false)
     : cpu(acpu), memory(amem), debug(adebug), romwbw_mode(aromwbw),
@@ -1037,7 +1041,7 @@ public:
     }
   }
 
-  // Attach HBIOS disk image
+  // Attach HBIOS disk image (file must already exist and be validated)
   bool attach_hbios_disk(int unit, const std::string& image_path) {
     if (unit < 0 || unit >= 16) return false;
 
@@ -1047,22 +1051,24 @@ public:
       hb_disks[unit].image_file = nullptr;
     }
 
-    // Open the disk image
+    // Open the disk image for read/write - file must exist (validated earlier)
     hb_disks[unit].image_path = image_path;
     hb_disks[unit].image_file = fopen(image_path.c_str(), "r+b");
     if (!hb_disks[unit].image_file) {
-      // Try creating it
-      hb_disks[unit].image_file = fopen(image_path.c_str(), "w+b");
+      // Try read-only as fallback
+      hb_disks[unit].image_file = fopen(image_path.c_str(), "rb");
       if (!hb_disks[unit].image_file) {
-        fprintf(stderr, "[HBIOS] Failed to open/create disk image: %s\n", image_path.c_str());
+        fprintf(stderr, "[HBIOS] Failed to open disk image: %s\n", image_path.c_str());
         hb_disks[unit].is_open = false;
         return false;
       }
+      fprintf(stderr, "[HBIOS] Attached disk unit %d (read-only): %s\n", unit, image_path.c_str());
+    } else {
+      fprintf(stderr, "[HBIOS] Attached disk unit %d: %s\n", unit, image_path.c_str());
     }
 
     hb_disks[unit].is_open = true;
     hb_disks[unit].current_lba = 0;
-    fprintf(stderr, "[HBIOS] Attached disk unit %d: %s\n", unit, image_path.c_str());
     return true;
   }
 
@@ -3455,6 +3461,19 @@ public:
         break;
       }
 
+      // RTC functions - no real-time clock hardware present
+      case HBF_RTCGETTIM:
+      case HBF_RTCSETTIM:
+      case HBF_RTCGETBYT:
+      case HBF_RTCSETBYT:
+      case HBF_RTCGETBLK:
+      case HBF_RTCSETBLK:
+      case HBF_RTCGETALM:
+      case HBF_RTCSETALM:
+      case HBF_RTCDEVICE:
+        result = HBR_NOHW;  // No RTC hardware
+        break;
+
       // VDA functions - no video hardware present
       case HBF_VDAINI:
       case HBF_VDAQRY:
@@ -3477,6 +3496,87 @@ public:
       case HBF_DSKYEVENT:
         result = HBR_NOHW;  // No DSKY hardware
         break;
+
+      // Host file transfer functions (0xE1-0xE5)
+      case HBF_HOST_OPEN_R: {
+        // Open host file for reading
+        // DE = address of null-terminated path string
+        uint16_t path_addr = cpu->regs.DE.get_pair16();
+        std::string path;
+        for (int i = 0; i < 256; i++) {
+          char c = memory->fetch_mem(path_addr + i);
+          if (c == 0) break;
+          path += c;
+        }
+        if (host_read_file) fclose(host_read_file);
+        host_read_file = fopen(path.c_str(), "rb");
+        result = host_read_file ? HBR_SUCCESS : HBR_FAILED;
+        if (debug) fprintf(stderr, "[HBIOS] HOST_OPEN_R '%s' -> %s\n",
+                          path.c_str(), host_read_file ? "OK" : "FAIL");
+        break;
+      }
+
+      case HBF_HOST_OPEN_W: {
+        // Open host file for writing
+        // DE = address of null-terminated path string
+        uint16_t path_addr = cpu->regs.DE.get_pair16();
+        std::string path;
+        for (int i = 0; i < 256; i++) {
+          char c = memory->fetch_mem(path_addr + i);
+          if (c == 0) break;
+          path += c;
+        }
+        if (host_write_file) fclose(host_write_file);
+        host_write_file = fopen(path.c_str(), "wb");
+        result = host_write_file ? HBR_SUCCESS : HBR_FAILED;
+        if (debug) fprintf(stderr, "[HBIOS] HOST_OPEN_W '%s' -> %s\n",
+                          path.c_str(), host_write_file ? "OK" : "FAIL");
+        break;
+      }
+
+      case HBF_HOST_READ: {
+        // Read byte from host file
+        // Returns: E = byte read, A = 0 success / 0xFF EOF
+        if (host_read_file) {
+          int c = fgetc(host_read_file);
+          if (c != EOF) {
+            cpu->regs.DE.set_low(c);
+            result = HBR_SUCCESS;
+          } else {
+            result = HBR_FAILED;  // EOF
+          }
+        } else {
+          result = HBR_FAILED;
+        }
+        break;
+      }
+
+      case HBF_HOST_WRITE: {
+        // Write byte to host file
+        // E = byte to write
+        if (host_write_file) {
+          fputc(cpu->regs.DE.get_low(), host_write_file);
+          result = HBR_SUCCESS;
+        } else {
+          result = HBR_FAILED;
+        }
+        break;
+      }
+
+      case HBF_HOST_CLOSE: {
+        // Close host file
+        // C = 0 for read file, C = 1 for write file
+        uint8_t which = cpu->regs.BC.get_low();
+        if (which == 0 && host_read_file) {
+          fclose(host_read_file);
+          host_read_file = nullptr;
+        } else if (which == 1 && host_write_file) {
+          fclose(host_write_file);
+          host_write_file = nullptr;
+        }
+        result = HBR_SUCCESS;
+        break;
+      }
 
       default:
         // HALT on unimplemented functions so we know exactly what's missing
@@ -3564,6 +3664,45 @@ public:
   }
 };
 
+// Disk size constants
+static constexpr size_t HD1K_SINGLE_SIZE = 8388608;      // 8 MB exactly
+static constexpr size_t HD1K_PREFIX_SIZE = 1048576;      // 1 MB prefix
+static constexpr size_t HD512_SINGLE_SIZE = 8519680;     // 8.32 MB
+
+// Validate disk image file - returns error message or nullptr if valid
+static const char* validate_disk_image(const char* path, size_t* out_size = nullptr) {
+  FILE* f = fopen(path, "rb");
+  if (!f) {
+    return "file does not exist";
+  }
+
+  fseek(f, 0, SEEK_END);
+  size_t size = ftell(f);
+  fclose(f);
+
+  if (out_size) *out_size = size;
+
+  // Check for valid hd1k sizes
+  if (size == HD1K_SINGLE_SIZE) {
+    return nullptr;  // Valid: single-slice hd1k (8MB)
+  }
+
+  // Check for combo disk: 1MB prefix + N * 8MB slices
+  if (size > HD1K_PREFIX_SIZE && ((size - HD1K_PREFIX_SIZE) % HD1K_SINGLE_SIZE) == 0) {
+    return nullptr;  // Valid: combo hd1k with prefix
+  }
+
+  // Check for hd512 sizes
+  if (size == HD512_SINGLE_SIZE) {
+    return nullptr;  // Valid: single-slice hd512 (8.32MB)
+  }
+  if (size > 0 && (size % HD512_SINGLE_SIZE) == 0) {
+    return nullptr;  // Valid: multi-slice hd512
+  }
+
+  return "invalid disk size (must be 8MB for hd1k or 8.32MB for hd512)";
+}
+
 void print_usage(const char* prog) {
   fprintf(stderr, "RomWBW Emulator v%s (%s)\n", EMU_VERSION, EMU_VERSION_DATE);
   fprintf(stderr, "Usage: %s --romwbw <rom.rom> [options]\n", prog);
@@ -3575,15 +3714,14 @@ void print_usage(const char* prog) {
   fprintf(stderr, "  --debug           Enable debug output\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Disk options:\n");
-  fprintf(stderr, "  --hbdisk0=FILE    Attach RomWBW disk image to unit 0 (appears as drive C:)\n");
-  fprintf(stderr, "  --hbdisk1=FILE    Attach RomWBW disk image to unit 1 (appears as drive D:)\n");
-  fprintf(stderr, "  --hdsk0=FILE      Attach SIMH HDSK disk to unit 0 (port 0xFD protocol)\n");
-  fprintf(stderr, "  --hdsk1=FILE      Attach SIMH HDSK disk to unit 1 (port 0xFD protocol)\n");
+  fprintf(stderr, "  --disk0=FILE      Attach disk image to slot 0 (appears as drives C:-F:)\n");
+  fprintf(stderr, "  --disk1=FILE      Attach disk image to slot 1 (appears as drives G:-J:)\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "  Supported disk formats (auto-detected):\n");
-  fprintf(stderr, "    hd1k  - Modern RomWBW format with 1MB prefix, 8MB slices, 1024 dir entries\n");
-  fprintf(stderr, "    hd512 - Classic format, 8.3MB slices, 512 dir entries\n");
-  fprintf(stderr, "  Single-slice 8MB images are detected as hd1k format.\n");
+  fprintf(stderr, "    hd1k  - Modern RomWBW format, 8MB per slice, 1024 dir entries\n");
+  fprintf(stderr, "    hd512 - Classic format, 8.32MB per slice, 512 dir entries\n");
+  fprintf(stderr, "  Disk files must exist and have valid sizes (8MB or 8.32MB per slice).\n");
+  fprintf(stderr, "  Combo disks with 1MB MBR prefix + multiple slices are supported.\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Other options:\n");
   fprintf(stderr, "  --escape=CHAR     Console escape char (default ^E)\n");
@@ -3596,9 +3734,9 @@ void print_usage(const char* prog) {
   fprintf(stderr, "  Use 'quit' to exit.\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Examples:\n");
-  fprintf(stderr, "  %s --romwbw emu_romwbw.rom\n", prog);
-  fprintf(stderr, "  %s --romwbw emu_romwbw.rom --hbdisk0=hd1k_combo.img\n", prog);
-  fprintf(stderr, "  %s --romwbw emu_romwbw.rom --hbdisk0=hd1k_games.img\n", prog);
+  fprintf(stderr, "  %s --romwbw roms/emu_romwbw.rom\n", prog);
+  fprintf(stderr, "  %s --romwbw roms/emu_romwbw.rom --disk0=disks/hd1k_combo.img\n", prog);
+  fprintf(stderr, "  %s --romwbw roms/emu_romwbw.rom --disk0=disks/z80cpm_tools.img\n", prog);
 }
 
 int main(int argc, char** argv) {
@@ -3651,8 +3789,35 @@ int main(int argc, char** argv) {
     } else if (strncmp(argv[i], "--start=", 8) == 0) {
       start_addr = strtol(argv[i] + 8, nullptr, 0);
       start_addr_set = true;
+    } else if (strncmp(argv[i], "--disk", 6) == 0) {
+      // Parse --disk0=file, --disk1=file (preferred form)
+      const char* opt = argv[i] + 6;
+      int unit = -1;
+      const char* path = nullptr;
+      if (isdigit(opt[0]) && opt[1] == '=' && opt[2] != '\0') {
+        unit = opt[0] - '0';
+        path = opt + 2;
+      } else if (isdigit(opt[0]) && isdigit(opt[1]) && opt[2] == '=' && opt[3] != '\0') {
+        unit = (opt[0] - '0') * 10 + (opt[1] - '0');
+        path = opt + 3;
+      }
+      if (unit >= 0 && unit < 16 && path) {
+        // Validate disk image exists and has valid size
+        size_t disk_size = 0;
+        const char* err = validate_disk_image(path, &disk_size);
+        if (err) {
+          fprintf(stderr, "Error: --disk%d=%s: %s\n", unit, path, err);
+          return 1;
+        }
+        hbios_disks[unit] = path;
+        fprintf(stderr, "[DISK] Validated disk%d: %s (%zu bytes)\n", unit, path, disk_size);
+      } else {
+        fprintf(stderr, "Invalid --disk option: %s (use --disk0=file or --disk1=file)\n", argv[i]);
+        return 1;
+      }
     } else if (strncmp(argv[i], "--hbdisk", 8) == 0) {
-      // Parse --hbdisk0=file, --hbdisk1=file, etc.
+      // Legacy: Parse --hbdisk0=file, --hbdisk1=file, etc.
+      fprintf(stderr, "Warning: --hbdisk is deprecated, use --disk instead\n");
       const char* opt = argv[i] + 8;
       int unit = -1;
       const char* path = nullptr;
@@ -3664,13 +3829,21 @@ int main(int argc, char** argv) {
         path = opt + 3;
       }
       if (unit >= 0 && unit < 16 && path) {
+        // Validate disk image exists and has valid size
+        size_t disk_size = 0;
+        const char* err = validate_disk_image(path, &disk_size);
+        if (err) {
+          fprintf(stderr, "Error: --hbdisk%d=%s: %s\n", unit, path, err);
+          return 1;
+        }
         hbios_disks[unit] = path;
       } else {
         fprintf(stderr, "Invalid --hbdisk option: %s\n", argv[i]);
         return 1;
       }
     } else if (strncmp(argv[i], "--hdsk", 6) == 0) {
-      // Parse --hdsk0=file, --hdsk1=file, etc. (SIMH HDSK port 0xFD protocol)
+      // Legacy: Parse --hdsk0=file, --hdsk1=file, etc. (SIMH HDSK port 0xFD protocol)
+      fprintf(stderr, "Warning: --hdsk is deprecated (uses legacy SIMH protocol), use --disk instead\n");
       const char* opt = argv[i] + 6;
       int unit = -1;
       const char* path = nullptr;

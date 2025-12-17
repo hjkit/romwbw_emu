@@ -104,10 +104,10 @@
     <div class="file-input">
       <label>Disk 0 (C:):</label>
       <select id="disk0Select" style="margin-right:4px;">
-        <option value="">-- Select Disk (hd1k format) --</option>
-        <option value="hd1k_combo.img" selected>hd1k_combo.img (49MB combo disk)</option>
-        <option value="z80cpm_tools.img">z80cpm_tools.img (Tools + R8/W8 file transfer)</option>
-        <option value="hd1k_games.img">hd1k_games.img (Classic games: Zork, Adventure)</option>
+        <option value="">-- None --</option>
+        <option value="hd1k_combo.img" selected>hd1k_combo.img (49MB combo)</option>
+        <option value="z80cpm_tools.img">z80cpm_tools.img (Tools + R8/W8)</option>
+        <option value="hd1k_games.img">hd1k_games.img (Games)</option>
         <option value="hd1k_cpm22.img">hd1k_cpm22.img (CP/M 2.2)</option>
         <option value="hd1k_zsdos.img">hd1k_zsdos.img (ZSDOS)</option>
       </select>
@@ -115,11 +115,12 @@
       <button id="downloadDisk0Btn" disabled title="Download modified disk">↓</button>
     </div>
     <div class="file-input">
-      <label>Disk 1 (D:):</label>
+      <label>Disk 1 (G:):</label>
       <select id="disk1Select" style="margin-right:4px;">
         <option value="">-- None --</option>
-        <option value="hd1k_games.img" selected>hd1k_games.img (Classic games)</option>
+        <option value="hd1k_combo.img">hd1k_combo.img (49MB combo)</option>
         <option value="z80cpm_tools.img">z80cpm_tools.img (Tools + R8/W8)</option>
+        <option value="hd1k_games.img" selected>hd1k_games.img (Games)</option>
         <option value="hd1k_cpm22.img">hd1k_cpm22.img (CP/M 2.2)</option>
         <option value="hd1k_zsdos.img">hd1k_zsdos.img (ZSDOS)</option>
       </select>
@@ -153,7 +154,7 @@
     <p><code>2</code> - Boot from disk (drive C:) | <code>C</code> - CP/M from ROM | <code>H</code> - Help</p>
 
     <h3>Drive Letters</h3>
-    <p><code>A:</code> RAM disk | <code>B:</code> ROM disk | <code>C:</code> Disk 0 | <code>D:</code> Disk 1</p>
+    <p><code>A:</code> RAM disk | <code>B:</code> ROM disk | <code>C:-F:</code> Disk 0 (4 slices) | <code>G:-J:</code> Disk 1 (4 slices)</p>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
@@ -192,6 +193,9 @@
 
     let romLoaded = false;
     let diskLoaded = [false, false];
+    // Store disk data so we can reload after ROM changes
+    let diskData = [null, null];
+    let diskNames = ['', ''];
 
     // Console output from emulator
     Module.onConsoleOutput = function(ch) {
@@ -449,10 +453,16 @@
       Module._free(ptr);
       romLoaded = true;
       statusDiv.textContent = 'ROM loaded: ' + name + ' (' + data.length + ' bytes)';
+      // ROM load resets emulator state, so reload any stored disks
+      reloadDisks();
     }
 
     // Helper to load disk data into emulator
     function loadDiskData(unit, data, name) {
+      // Store disk data so we can reload after ROM changes
+      diskData[unit] = data;
+      diskNames[unit] = name;
+      // Actually load into emulator
       const ptr = Module._malloc(data.length);
       Module.HEAPU8.set(data, ptr);
       Module._romwbw_load_disk(unit, ptr, data.length);
@@ -461,6 +471,19 @@
       if (unit === 0) downloadDisk0Btn.disabled = false;
       if (unit === 1) downloadDisk1Btn.disabled = false;
       statusDiv.textContent = 'Disk ' + unit + ' loaded: ' + name;
+    }
+
+    // Reload stored disk data into emulator (after ROM load resets state)
+    function reloadDisks() {
+      for (let unit = 0; unit < 2; unit++) {
+        if (diskData[unit]) {
+          const ptr = Module._malloc(diskData[unit].length);
+          Module.HEAPU8.set(diskData[unit], ptr);
+          Module._romwbw_load_disk(unit, ptr, diskData[unit].length);
+          Module._free(ptr);
+          console.log('Reloaded disk ' + unit + ': ' + diskNames[unit]);
+        }
+      }
     }
 
     // Load ROM from server select
@@ -570,6 +593,9 @@
           return;
         }
       }
+
+      // Reload any previously loaded disks (ROM load resets emulator state)
+      reloadDisks();
 
       // Auto-load default disk 0 if none loaded
       if (!diskLoaded[0]) {
