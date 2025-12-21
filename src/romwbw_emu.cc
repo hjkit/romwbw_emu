@@ -861,6 +861,10 @@ private:
   FILE* host_read_file = nullptr;   // Currently open host file for reading
   FILE* host_write_file = nullptr;  // Currently open host file for writing
 
+  // Boot info - saved during SYSBOOT, returned by SYSGET_BOOTINFO
+  int saved_boot_unit = 0;   // Boot disk unit
+  int saved_boot_slice = 0;  // Boot slice
+
 public:
   AltairEmulator(qkz80* acpu, cpm_mem* amem, bool adebug = false, bool aromwbw = false)
     : cpu(acpu), memory(amem), debug(adebug), romwbw_mode(aromwbw),
@@ -1965,6 +1969,10 @@ public:
 
         // Use boot_unit for the rest of the function
         unit = boot_unit;
+
+        // Save boot info for SYSGET_BOOTINFO
+        saved_boot_unit = boot_unit;
+        saved_boot_slice = boot_slice;
 
         // Helper lambda to read bytes from disk (either MD or HD)
         banked_mem* bmem = dynamic_cast<banked_mem*>(memory);
@@ -3254,9 +3262,13 @@ public:
             cpu->regs.HL.set_pair16(0);
             break;
           case 0xE0:  // BOOTINFO - Get boot volume and bank info
-            // D = boot device/unit, E = boot bank
-            cpu->regs.DE.set_high(0);   // Boot device 0
-            cpu->regs.DE.set_low(0x8E); // Boot bank
+            // D = boot device/unit, E = boot slice
+            cpu->regs.DE.set_high(saved_boot_unit);
+            cpu->regs.DE.set_low(saved_boot_slice);
+            if (debug) {
+              fprintf(stderr, "[SYSGET BOOTINFO] Returning D=%d (unit), E=%d (slice)\n",
+                      saved_boot_unit, saved_boot_slice);
+            }
             break;
           case 0xF0:  // CPUINFO - CPU info
             cpu->regs.DE.set_pair16(0x0004);  // Z80 @ 4MHz
