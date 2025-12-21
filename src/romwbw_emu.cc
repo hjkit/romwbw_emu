@@ -38,17 +38,17 @@
 // Forward declaration
 class AltairEmulator;
 
-// Extended Z80 CPU with block I/O support
-// Block I/O instructions (INI, INIR, OUTI, OUTIR, etc.) need to call back
-// to the emulator for port I/O handling
+// Extended Z80 CPU with port I/O support
+// Overrides port_in/port_out virtual functions to route I/O through the emulator
 class z80_with_io : public qkz80 {
 public:
   AltairEmulator* emu;  // Set after emulator is created
 
   z80_with_io(qkz80_cpu_mem* memory) : qkz80(memory), emu(nullptr) {}
 
-  // Execute one instruction, handling block I/O specially
-  void execute_with_io();
+  // Override port I/O - routes through emulator's handle_in/handle_out
+  void port_out(qkz80_uint8 port, qkz80_uint8 value) override;
+  qkz80_uint8 port_in(qkz80_uint8 port) override;
 };
 
 // Global for signal handler to request stop
@@ -829,14 +829,8 @@ private:
   RomAppState rom_apps[MAX_ROM_APPS];
   int num_rom_apps = 0;
 
-  // EMU HBIOS signal port state (port 0xEE)
-  int emu_signal_state = 0;        // State machine for signal protocol
-  uint16_t cio_dispatch_addr = 0;  // CIO_DISPATCH trap address
-  uint16_t dio_dispatch_addr = 0;  // DIO_DISPATCH trap address
-  uint16_t rtc_dispatch_addr = 0;  // RTC_DISPATCH trap address
-  uint16_t sys_dispatch_addr = 0;  // SYS_DISPATCH trap address
-  bool hbios_trapping_enabled = false;  // True after init complete signal
-  bool skip_synthetic_ret = false;       // Skip RET in handle_hbios_call (for I/O port dispatch)
+  // Skip synthetic RET in handle_hbios_call (for I/O port dispatch via 0xEF)
+  bool skip_synthetic_ret = false;
 
   // RomWBW romldr support - load real boot menu from RomWBW ROM
   std::string romldr_path;             // Path to romldr.bin or .rom file
@@ -1222,13 +1216,23 @@ public:
       case 0x01:  // SIO data (alternate)
       case 0x11:  // SIO data (standard)
         if (input_char >= 0) {
-          value = normalize_eol(input_char) & 0x7F;
-          input_char = -1;
+          // Check for console escape before returning
+          if (input_char == console_escape_char && isatty(STDIN_FILENO)) {
+            console_mode_requested = true;
+            input_char = -1;
+            value = 0;  // Don't pass escape to program
+          } else {
+            value = normalize_eol(input_char) & 0x7F;
+            input_char = -1;
+          }
         } else if (peek_char >= 0) {
           // Use character already peeked by stdin_has_data() or check_console_escape_async()
           int ch = peek_char;
           peek_char = -1;
-          if (check_ctrl_c_exit(ch)) {
+          if (ch == console_escape_char && isatty(STDIN_FILENO)) {
+            console_mode_requested = true;
+            value = 0;  // Don't pass escape to program
+          } else if (check_ctrl_c_exit(ch)) {
             value = 0;  // ^C consumed
           } else {
             value = normalize_eol(ch) & 0x7F;
@@ -1238,7 +1242,10 @@ public:
           int ch = peek_char;
           peek_char = -1;
           if (ch == EOF) ch = 0;
-          if (check_ctrl_c_exit(ch)) {
+          if (ch == console_escape_char && isatty(STDIN_FILENO)) {
+            console_mode_requested = true;
+            value = 0;  // Don't pass escape to program
+          } else if (check_ctrl_c_exit(ch)) {
             value = 0;  // ^C consumed
           } else {
             value = normalize_eol(ch) & 0x7F;
@@ -1490,7 +1497,7 @@ private:
   // Protocol:
   //   0x01 = HBIOS starting (boot code reached HBIOS entry)
   //   0xFE = PREINIT about to be called (test mode: halt here)
-  //   0xFF = Init complete, enable PC-based trapping at 0xFFF0
+  //   0xFF = Init complete (HBIOS dispatch via port 0xEF is ready)
   void handle_emu_signal(uint8_t value) {
     if (debug) {
       fprintf(stderr, "[EMU signal: 0x%02X at PC=0x%04X]\n", value, cpu->regs.PC.get_pair16());
@@ -1509,20 +1516,14 @@ private:
         halted = true;
         break;
 
-      case 0xFF:  // Init complete - enable PC trapping at 0xFFF0
-        hbios_trapping_enabled = true;
-        if (debug) fprintf(stderr, "[EMU HBIOS: Init complete, PC trapping enabled at 0xFFF0]\n");
+      case 0xFF:  // Init complete - HBIOS dispatch now via port 0xEF
+        if (debug) fprintf(stderr, "[EMU HBIOS: Init complete, dispatch via port 0xEF]\n");
 
         // If romldr path is set, switch to ROM bank 1 and run romldr from ROM
         if (!romldr_path.empty()) {
           banked_mem* bmem = dynamic_cast<banked_mem*>(memory);
           if (bmem && romldr_loaded) {
-            // romldr is in ROM bank 1. ROM bank 1 already has:
-            // - RST 08 at 0x0008: JP 0xFFF0 (HBIOS entry, we trap this)
-            // - Entry at 0x0000: JP 0x0100 (main romldr init)
-            //
-            // Switch to ROM bank 1 and jump to the entry point.
-            // The code runs from ROM (0x0000-0x7FFF) with common RAM at 0x8000-0xFFFF.
+            // romldr is in ROM bank 1. Switch to it and jump to entry point.
             if (debug) fprintf(stderr, "[ROMLDR] Switching to ROM bank 1 (romldr), jumping to 0x0000\n");
             bmem->select_bank(0x01);  // ROM bank 1
             next_pc = 0x0000;  // Signal main loop to jump here instead of pc+2
@@ -1542,7 +1543,7 @@ private:
   // The proxy code at 0xFFF0 should be:
   //   OUT (0xEF), A   ; Trigger dispatch (we handle HBIOS call here)
   //   RET             ; Return to caller (Z80 executes this normally)
-  // Unlike PC-based trapping, we do NOT do a synthetic RET here.
+  // We do NOT do a synthetic RET here - the Z80 proxy handles it.
   void handle_hbios_dispatch() {
     if (debug) {
       uint8_t func = cpu->regs.BC.get_high();
@@ -1554,10 +1555,9 @@ private:
     // Set flag to skip synthetic RET (Z80 proxy has its own RET instruction)
     skip_synthetic_ret = true;
 
-    // Use existing HBIOS handler
+    // Handle the HBIOS call
     handle_hbios_call(cpu->regs.PC.get_pair16());
 
-    // Restore flag for PC-based trapping
     skip_synthetic_ret = false;
   }
 
@@ -1572,50 +1572,7 @@ public:
     }
   }
 
-  // Check if current PC matches an HBIOS dispatch address
-  // Returns true if trapped and handled
-  bool check_hbios_trap(uint16_t pc) {
-    if (!hbios_trapping_enabled) return false;
-
-    // Trap at 0xFFF9 - HB_BNKCALL (bank call) - used by romldr for PRTSUM
-    // romldr 'd' command does: LD A,BID_BIOS / LD IX,$0406 / JP HB_BNKCALL
-    // HB_BNKCALL at 0xFFF9 should switch to bank in A and call address in IX
-    // Our proxy at 0xFFF9 is just RET, so we trap here to handle specific calls
-    if (pc == 0xFFF9) {
-      uint16_t ix = cpu->regs.IX.get_pair16();
-      if (debug) fprintf(stderr, "[HB_BNKCALL] Trap at 0xFFF9, IX=0x%04X, A=0x%02X\n",
-                         ix, cpu->regs.AF.get_high());
-      if (ix == 0x0406) {  // PRTSUM
-        return handle_prtsum();
-      }
-      // Unknown bank call - let the RET stub execute (returns to caller)
-      return false;
-    }
-
-    // Trap at 0xFFF0 - the fixed HBIOS entry point
-    // This is where CBIOS and user code call HBIOS (RST 08 also jumps here via proxy)
-    if (pc == 0xFFF0) {
-      return handle_hbios_call(pc);
-    }
-
-    // Optional: trap at specific dispatch addresses if configured (non-zero)
-    if (cio_dispatch_addr != 0 && pc == cio_dispatch_addr) {
-      return handle_hbios_call(pc);
-    }
-    if (dio_dispatch_addr != 0 && pc == dio_dispatch_addr) {
-      return handle_hbios_call(pc);
-    }
-    if (rtc_dispatch_addr != 0 && pc == rtc_dispatch_addr) {
-      return handle_hbios_call(pc);
-    }
-    if (sys_dispatch_addr != 0 && pc == sys_dispatch_addr) {
-      return handle_hbios_call(pc);
-    }
-
-    return false;
-  }
-
-  // Handle PRTSUM - print device summary (called by romldr 'd' command)
+  // Handle PRTSUM - print device summary (for future use via port dispatch)
   bool handle_prtsum() {
     // Print header
     const char* header = "\r\nDisk Device Summary\r\n\r\n";
@@ -3673,6 +3630,21 @@ public:
   }
 };
 
+// z80_with_io port I/O implementations
+// These override the qkz80 virtual functions and route I/O through the emulator
+void z80_with_io::port_out(qkz80_uint8 port, qkz80_uint8 value) {
+  if (emu) {
+    emu->handle_out(port, value);
+  }
+}
+
+qkz80_uint8 z80_with_io::port_in(qkz80_uint8 port) {
+  if (emu) {
+    return emu->handle_in(port);
+  }
+  return 0xFF;  // Floating bus
+}
+
 // Disk size constants
 static constexpr size_t HD1K_SINGLE_SIZE = 8388608;      // 8 MB exactly
 static constexpr size_t HD1K_PREFIX_SIZE = 1048576;      // 1 MB prefix
@@ -4060,7 +4032,7 @@ int main(int argc, char** argv) {
 
   // Create memory and CPU
   cpm_mem memory;
-  qkz80 cpu(&memory);
+  z80_with_io cpu(&memory);
 
   // RomWBW requires Z80 mode, others use 8080
   if (romwbw_mode) {
@@ -4080,8 +4052,9 @@ int main(int argc, char** argv) {
     fprintf(stderr, "CPU mode: 8080\n");
   }
 
-  // Create emulator
+  // Create emulator and link CPU to it for port I/O
   AltairEmulator emu(&cpu, &memory, debug, romwbw_mode);
+  cpu.emu = &emu;  // Enable port_in/port_out routing through emulator
   emu.set_strict_io_mode(strict_io_mode);
 
   // Set up HBIOS disk images
@@ -4420,80 +4393,12 @@ int main(int argc, char** argv) {
       }
     }
 
-    // Check for HBIOS trap in RomWBW mode
-    // PC-based trapping when EMU HBIOS has signaled dispatch addresses (via port 0xEE)
-    // NOTE: We only trap at dispatch addresses (CIO_DISPATCH, DIO_DISPATCH, etc.)
-    // NOT at RST 08 opcodes. The RST 08 instruction pushes return address and jumps
-    // to 0x0008, which then routes to the appropriate dispatch address. We must let
-    // RST 08 execute normally so the stack is set up correctly.
-    if (romwbw_mode) {
-      if (emu.check_hbios_trap(pc)) {
-        instruction_count++;
-        if (in_step_mode) step_count--;
-        continue;
-      }
-    }
-
     // Check for HLT instruction
     if (opcode == 0x76) {
       fprintf(stderr, "\nHLT instruction at 0x%04X after %lld instructions\n",
               pc, instruction_count);
       emu.print_port_stats();
       break;
-    }
-
-    // Handle IN instruction (0xDB)
-    if (opcode == 0xDB) {
-      // Mark both bytes as code for tracing
-      memory.fetch_mem(pc, true);
-      memory.fetch_mem(pc + 1, true);
-      uint8_t port = memory.fetch_mem(pc + 1) & 0xFF;
-      uint8_t value = emu.handle_in(port);
-      // Check if strict I/O mode halted us
-      if (emu.is_halted()) {
-        fprintf(stderr, "\nEmulator halted (strict I/O mode) after %lld instructions\n",
-                instruction_count);
-        emu.print_port_stats();
-        break;
-      }
-      // Check if the input was the console escape char
-      if (value == console_escape_char && isatty(STDIN_FILENO)) {
-        console_mode_requested = true;
-        // Don't pass escape char to emulated program - re-read
-        cpu.regs.PC.set_pair16(pc);  // Stay at IN instruction
-        continue;
-      }
-      cpu.set_reg8(value, qkz80::reg_A);
-      cpu.regs.PC.set_pair16(pc + 2);
-      instruction_count++;
-      if (in_step_mode) step_count--;
-      continue;
-    }
-
-    // Handle OUT instruction (0xD3)
-    if (opcode == 0xD3) {
-      // Mark both bytes as code for tracing
-      memory.fetch_mem(pc, true);
-      memory.fetch_mem(pc + 1, true);
-      uint8_t port = memory.fetch_mem(pc + 1) & 0xFF;
-      uint8_t value = cpu.get_reg8(qkz80::reg_A);
-      emu.handle_out(port, value);
-      // Check if strict I/O mode halted us
-      if (emu.is_halted()) {
-        fprintf(stderr, "\nEmulator halted (strict I/O mode) after %lld instructions\n",
-                instruction_count);
-        emu.print_port_stats();
-        break;
-      }
-      // Check if OUT handler wants to redirect PC
-      if (emu.has_next_pc()) {
-        cpu.regs.PC.set_pair16(emu.get_next_pc());
-      } else {
-        cpu.regs.PC.set_pair16(pc + 2);
-      }
-      instruction_count++;
-      if (in_step_mode) step_count--;
-      continue;
     }
 
     // Debug: track first 50000 instructions after boot to see where we go
@@ -4508,10 +4413,23 @@ int main(int argc, char** argv) {
     // Debug: trace instructions after CIOIN
     emu.trace_after_cioin(pc, opcode);
 
-    // Execute one instruction
+    // Execute one instruction (I/O is handled via port_in/port_out virtual functions)
     cpu.execute();
     instruction_count++;
     if (in_step_mode) step_count--;
+
+    // Check if strict I/O mode halted us during port operations
+    if (emu.is_halted()) {
+      fprintf(stderr, "\nEmulator halted (strict I/O mode) after %lld instructions\n",
+              instruction_count);
+      emu.print_port_stats();
+      break;
+    }
+
+    // Check if OUT handler wants to redirect PC (e.g., for romldr bank switch)
+    if (emu.has_next_pc()) {
+      cpu.regs.PC.set_pair16(emu.get_next_pc());
+    }
 
     // Check for scheduled interrupts
     if (nmi_config.enabled && cpu.cycles >= nmi_config.next_trigger) {

@@ -11,6 +11,7 @@
 #include <cstdarg>
 #include <cstring>
 #include <ctime>
+#include <strings.h>  // For strcasecmp/strncasecmp
 #include <queue>
 #include <random>
 #include <unistd.h>
@@ -38,6 +39,26 @@ static int consecutive_ctrl_c = 0;
 
 // Random number generator
 static std::mt19937 rng(std::random_device{}());
+
+//=============================================================================
+// Platform Utilities Implementation
+//=============================================================================
+
+void emu_sleep_ms(int ms) {
+  usleep(ms * 1000);
+}
+
+int emu_strcasecmp(const char* s1, const char* s2) {
+  return strcasecmp(s1, s2);
+}
+
+int emu_strncasecmp(const char* s1, const char* s2, size_t n) {
+  return strncasecmp(s1, s2, n);
+}
+
+//=============================================================================
+// Terminal State Management
+//=============================================================================
 
 static void restore_terminal() {
   if (termios_saved && raw_mode_enabled) {
