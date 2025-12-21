@@ -1641,11 +1641,13 @@ void HBIOSDispatch::handleSYS() {
           // Set front panel switches - just ignore
           break;
         case SYSSET_BOOTINFO:
-          // Set boot volume and bank info
-          // D = boot device/unit, E = boot bank, L = boot slice
+          // Set boot volume info (called by CPMLDR before loading CPM3.SYS)
+          // D = boot unit, E = boot slice, L = bank (always 0)
+          saved_boot_unit = cpu->regs.DE.get_high();
+          saved_boot_slice = cpu->regs.DE.get_low();
           if (debug) {
-            emu_log("[SYSSET BOOTINFO] device=%d bank=0x%02X slice=%d\n",
-                    cpu->regs.DE.get_high(), cpu->regs.DE.get_low(), cpu->regs.HL.get_low());
+            emu_log("[SYSSET BOOTINFO] unit=%d slice=%d (bank=0x%02X ignored)\n",
+                    saved_boot_unit, saved_boot_slice, cpu->regs.HL.get_low());
           }
           break;
         default:
