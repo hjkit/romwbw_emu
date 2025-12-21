@@ -1359,7 +1359,6 @@ public:
           return;
 
         case 0xEC:  // EMU BNKCPY port - inter-bank memory copy
-          fprintf(stderr, "[PORT 0xEC] BNKCPY triggered at PC=0x%04X\n", cpu->regs.PC.get_pair16());
           handle_emu_bnkcpy();
           return;
 
@@ -1372,16 +1371,6 @@ public:
           return;
 
         case 0xEF:  // HBIOS dispatch trigger port
-          {
-            // Trace HBIOS calls for debugging
-            static int hbios_trace_count = 0;
-            uint8_t func = cpu->regs.BC.get_high();
-            if (hbios_trace_count < 200 && (func == 0x12 || func == 0x13)) {
-              hbios_trace_count++;
-              fprintf(stderr, "[PORT 0xEF #%d] PC=0x%04X func=0x%02X unit=%d\n",
-                      hbios_trace_count, cpu->regs.PC.get_pair16(), func, cpu->regs.BC.get_low());
-            }
-          }
           handle_hbios_dispatch();
           return;
 
@@ -2239,14 +2228,15 @@ public:
         uint16_t end_addr = meta_buf[28] | (meta_buf[29] << 8);
         uint16_t entry_addr = meta_buf[30] | (meta_buf[31] << 8);
 
-        fprintf(stderr, "[SYSBOOT] Load: 0x%04X - 0x%04X, Entry: 0x%04X\n",
-                load_addr, end_addr, entry_addr);
+        if (debug) {
+          fprintf(stderr, "[SYSBOOT] Load: 0x%04X - 0x%04X, Entry: 0x%04X\n",
+                  load_addr, end_addr, entry_addr);
+        }
 
         // Switch to user bank (0x8E) for loading
         if (bmem) {
           // Copy page zero (RST vectors) and HCB from ROM bank 0 to RAM bank 0x8E
           // This is crucial - CBIOS uses RST 08 to call HBIOS!
-          fprintf(stderr, "[BANK] Copying page zero (RST vectors) and HCB from ROM bank 0 to RAM bank 0x8E\n");
 
           // Copy page zero (0x0000-0x0100) - contains RST 08 which jumps to 0xFFF0
           for (uint16_t addr = 0x0000; addr < 0x0100; addr++) {
@@ -2263,10 +2253,6 @@ public:
           bmem->write_bank(0x8E, 0x0112, 0x00);
 
           bmem->select_bank(0x8E);  // User bank
-
-          // Verify RST 08 vector is correct
-          fprintf(stderr, "[BANK] RST 08 (0x0008) in bank 0x8E: %02X %02X %02X\n",
-                  bmem->read_bank(0x8E, 0x0008), bmem->read_bank(0x8E, 0x0009), bmem->read_bank(0x8E, 0x000A));
         }
 
         // Read system image directly into memory (starts at offset 0x600)
@@ -2626,13 +2612,6 @@ public:
                 lba = cpu->regs.DE.get_low();
               }
 
-              // DEBUG: Trace BNKCALL DIOSEEK for CP/M 3 boot investigation
-              static int bnkcall_dioseek_trace = 0;
-              if (bnkcall_dioseek_trace < 50 && is_harddisk) {
-                bnkcall_dioseek_trace++;
-                fprintf(stderr, "[BNKCALL DIOSEEK #%d] unit=%d LBA=%u\n", bnkcall_dioseek_trace, dio_unit, lba);
-              }
-
               if (is_memdisk) {
                 md_disks[dio_unit].current_lba = lba;
                 result = HBR_SUCCESS;
@@ -2649,15 +2628,6 @@ public:
               uint16_t buffer_addr = cpu->regs.HL.get_pair16();
               uint8_t buffer_bank = cpu->regs.DE.get_high();
               uint8_t block_count = cpu->regs.DE.get_low();
-
-              // DEBUG: Trace BNKCALL disk reads for CP/M 3 boot investigation
-              static int bnkcall_dioread_trace = 0;
-              if (bnkcall_dioread_trace < 100 && is_harddisk) {
-                bnkcall_dioread_trace++;
-                uint32_t lba = hb_disks[dio_unit - 2].current_lba;
-                fprintf(stderr, "[BNKCALL DIOREAD #%d] unit=%d LBA=%u bank=0x%02X addr=0x%04X blocks=%d\n",
-                        bnkcall_dioread_trace, dio_unit, lba, buffer_bank, buffer_addr, block_count);
-              }
 
               if (!is_memdisk && !is_harddisk) {
                 result = HBR_NOTREADY;
@@ -2996,13 +2966,6 @@ public:
         // Bit 31 (0x80 in high byte of DE) = LBA mode flag, mask it off
         uint32_t lba = (((uint32_t)(de_reg & 0x7FFF) << 16) | hl_reg);
 
-        // DEBUG: Trace DIOSEEK calls
-        static int dioseek_trace = 0;
-        if (dioseek_trace < 50 && unit >= 2) {
-          dioseek_trace++;
-          fprintf(stderr, "[DIOSEEK HD #%d] unit=%d LBA=%u\n", dioseek_trace, unit, lba);
-        }
-
         // Handle memory disks (units 0-1) vs hard disks (units 2+)
         if (unit < 2 && md_disks[unit].is_enabled) {
           md_disks[unit].current_lba = lba;
@@ -3027,16 +2990,6 @@ public:
         bool is_memdisk = (unit < 2 && md_disks[unit].is_enabled);
         bool is_harddisk = (unit >= 2 && unit < 18 && hb_disks[unit - 2].is_open);
 
-        // DEBUG: Trace disk reads for CP/M 3 boot investigation
-        static int dioread_trace_count = 0;
-        constexpr int DIOREAD_TRACE_LIMIT = 100;  // Trace first 100 reads
-        if (DIOREAD_TRACE_LIMIT > 0 && is_harddisk && dioread_trace_count < DIOREAD_TRACE_LIMIT) {
-          dioread_trace_count++;
-          uint32_t lba = hb_disks[unit - 2].current_lba;
-          fprintf(stderr, "[DIOREAD HD #%d] unit=%d LBA=%u bank=0x%02X addr=0x%04X blocks=%d\n",
-                  dioread_trace_count, unit, lba, buffer_bank, buffer_addr, block_count);
-        }
-
         if (!is_memdisk && !is_harddisk) {
           result = HBR_FAILED;
           cpu->regs.DE.set_low(0);  // 0 blocks read
@@ -3060,16 +3013,6 @@ public:
             uint32_t sector_in_bank = md.current_lba % sectors_per_bank;
             uint8_t src_bank = md.start_bank + bank_offset;
             uint16_t src_offset = sector_in_bank * HBIOS_SECTOR_SIZE;
-
-            // DEBUG: Trace ROM disk reads (first few bytes)
-            if (DIOREAD_TRACE_LIMIT > 0 && unit == 1 && dioread_trace_count <= DIOREAD_TRACE_LIMIT && bmem) {
-              fprintf(stderr, "  LBA %u -> src_bank=0x%02X offset=0x%04X  first bytes: %02X %02X %02X %02X\n",
-                      md.current_lba, src_bank, src_offset,
-                      bmem->read_bank(src_bank, src_offset),
-                      bmem->read_bank(src_bank, src_offset+1),
-                      bmem->read_bank(src_bank, src_offset+2),
-                      bmem->read_bank(src_bank, src_offset+3));
-            }
 
             // Read 512 bytes from source bank to destination
             for (size_t j = 0; j < HBIOS_SECTOR_SIZE; j++) {

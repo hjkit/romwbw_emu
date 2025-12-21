@@ -37,6 +37,7 @@
 EMU_SIGNAL_PORT	equ	0EEh		; Port to signal emulator (init/status)
 EMU_DISPATCH_PORT equ	0EFh		; Port to trigger HBIOS dispatch
 EMU_BNKCALL_PORT  equ	0EDh		; Port to trigger bank call (IX=addr, A=bank)
+EMU_BNKCPY_PORT   equ	0ECh		; Port to trigger bank copy (params at 0xFFE2-0xFFE9)
 HBX_LOC		equ	0FE00h		; Target location of proxy
 HBX_SIZ		equ	0200h		; Size of proxy (512 bytes)
 
@@ -318,8 +319,9 @@ HBX_IMG:
 ; Offset 0x04: Entry point for HBIOS call from proxy
 	jp	HB_INVOKE		; Goes to main HBIOS code in ROM bank
 
-; Offset 0x07: Bank switching (position-independent using relative jumps)
+; Offset 0x07: Bank switching (updates CURBNK then selects bank)
 HBX_BNKSEL_START equ $ - HBX_IMG
+	ld	(0FFE0h), a		; Update CURBNK at 0xFFE0
 	bit	7, a			; Check RAM/ROM bit
 	jr	z, HBX_SEL_ROM		; Jump if ROM
 	out	(078h), a		; RAM bank select port
@@ -349,9 +351,8 @@ PMGMT_LOCK:	db	0FEh		; Mutex lock
 	out	(EMU_DISPATCH_PORT), a	; 0xFFF0: HBIOS invoke (triggers emulator)
 	ret				; 0xFFF2: Return to caller
 	jp	HBX_LOC + HBX_BNKSEL_START ; 0xFFF3: Bank select (in proxy)
-	ret				; 0xFFF6: Bank copy (stub)
-	nop
-	nop
+	out	(EMU_BNKCPY_PORT), a	; 0xFFF6: Bank copy (triggers emulator)
+	ret				; 0xFFF8: Return after copy
 	out	(EMU_BNKCALL_PORT), a	; 0xFFF9: Bank call (trigger emulator)
 	ret				; 0xFFFB: Return after emulator handles it
 	dw	HBX_LOC			; 0xFFFC: Ident pointer -> proxy start
