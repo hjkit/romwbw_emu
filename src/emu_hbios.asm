@@ -99,8 +99,6 @@ NAME:	db	"EMU HBIOS v1.0",0
 AUTH:	db	"EMU",0
 DESC:	db	"Emulator HBIOS - traps to cpmemu",0
 
-	ds	0100h - $, 0FFh		; Pad to end of page zero
-
 ;==================================================================================================
 ; HBIOS Configuration Block (HCB) at 0x0100
 ;==================================================================================================
@@ -129,22 +127,19 @@ CB_CONDEV:	db	0FFh		; Console unit (0xFF = use default) (offset 0x12)
 CB_DIAGLVL:	db	4		; Diagnostic level (4 = standard) (offset 0x13)
 CB_BOOTMODE:	db	1		; Boot mode (1 = menu) (offset 0x14)
 
-	; Padding to offset 0x20 (heap info) - 11 bytes from 0x15 to 0x1F
-	ds	11, 0
+	org	0120h			; Heap info at offset 0x20
 
 CB_HEAP:	dw	0		; Heap start (offset 0x20)
 CB_HEAPTOP:	dw	0		; Heap top (offset 0x22)
 
-	; Padding to offset 0x30 (switch info) - 12 bytes from 0x24 to 0x2F
-	ds	12, 0
+	org	0130h			; Switch info at offset 0x30
 
 CB_SWITCHES:	db	0		; NVR status (offset 0x30)
 CB_SW_AB_OPT:	dw	0		; Auto boot options (offset 0x31)
 CB_SW_AB_CFG:	db	0		; Auto boot config (offset 0x33)
 CB_SW_CKSUM:	db	0		; Checksum (offset 0x34)
 
-	; Padding to offset 0xD8 (bank IDs) - 163 bytes from 0x35 to 0xD7
-	ds	163, 0
+	org	01D8h			; Bank IDs at offset 0xD8
 
 ; Bank IDs at offset 0xD8 (per hbios.inc)
 CB_BIDCOM:	db	08Fh		; Common bank (offset 0xD8)
@@ -158,8 +153,7 @@ CB_ROMD_BNKS:	db	12		; ROM disk banks (offset 0xDF)
 CB_BIDAPP0:	db	089h		; App bank start (offset 0xE0)
 CB_APP_BNKS:	db	3		; App bank count (offset 0xE1)
 
-	; Padding to 0x100 bytes (end of HCB) - 30 bytes from 0xE2 to 0xFF
-	ds	30, 0
+	org	0200h			; HB_START at 0x200
 
 ;==================================================================================================
 ; HB_START - System initialization
@@ -334,10 +328,7 @@ HBX_SEL_ROM:
 	out	(07Ch), a		; ROM bank select port
 	ret
 
-; Pad to offset 0x1E0 within HBX_IMG for management block
-; HBX_IMG starts at 0x500, bank select ends at 0x510
-; Need 0x1E0 - 0x11 = 0x1CF = 463 bytes of padding
-	ds	01CFh, 0
+	org	06E0h			; PMGMT at offset 0x1E0 within HBX_IMG (0xFFE0 when installed)
 
 ; Offset 0x1E0: HBIOS Proxy Management Block (at 0xFFE0 when installed)
 PMGMT_CURBNK:	db	000h		; Current bank ID
@@ -352,9 +343,7 @@ PMGMT_CPYLEN:	dw	0		; Bank copy length
 PMGMT_RTCLATCH:	db	0		; RTC latch shadow
 PMGMT_LOCK:	db	0FEh		; Mutex lock
 
-; Entry points at offset 0x1F0 within HBX_IMG (0xFFF0 when installed)
-; PMGMT is 16 bytes (0x1E0-0x1EF), so entry points should immediately follow
-; No padding needed - PMGMT_LOCK is at 0x1EF, entry points at 0x1F0
+	org	06F0h			; Entry points at offset 0x1F0 (0xFFF0 when installed)
 
 ; Offset 0x1F0: Fixed address entry points (at 0xFFF0 when installed)
 	out	(EMU_DISPATCH_PORT), a	; 0xFFF0: HBIOS invoke (triggers emulator)
