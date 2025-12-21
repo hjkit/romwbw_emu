@@ -2419,8 +2419,6 @@ public:
       case HBF_SYSRESET: {  // System reset (warm/cold boot)
         // C register: 0x01 = warm boot (restart boot loader), 0x02 = cold boot, 0x03 = user reset
         uint8_t reset_type = unit;  // unit is C register
-        fprintf(stderr, "[SYSRESET] Type 0x%02X requested from PC=0x%04X\n",
-                reset_type, cpu->regs.PC.get_pair16());
         if (reset_type == 0x01 || reset_type == 0x02) {
           // Actual system reset requested (from REBOOT utility)
           fprintf(stderr, "\n[SYSRESET] %s boot requested - restarting system\n",
