@@ -671,10 +671,13 @@ void HBIOSDispatch::handleCIO() {
     case HBF_CIOIN: {
       // Read character - behavior depends on dispatch mode and platform
       if (!blocking_allowed && !emu_console_has_input()) {
-        // Non-blocking mode (web/WASM) - set waiting flag if no input
+        // Non-blocking mode (web/WASM) - no input available
+        // Rewind PC to re-execute OUT instruction when input arrives
+        // OUT (0xEF), A is 2 bytes, PC currently points past it
+        uint16_t pc = cpu->regs.PC.get_pair16();
+        cpu->regs.PC.set_pair16(pc - 2);
         waiting_for_input = true;
-        cpu->regs.DE.set_low(0);
-        break;
+        return;  // Don't call setResult/doRet - will retry
       }
       // Blocking mode (CLI) or input available - read char
       // emu_console_read_char() blocks if needed
