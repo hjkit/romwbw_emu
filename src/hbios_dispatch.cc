@@ -791,35 +791,28 @@ void HBIOSDispatch::handleCIO() {
 
   switch (func) {
     case HBF_CIOIN: {
-      // Read character from input buffer
-      // If no input available, set state to NEEDS_INPUT and pause execution
-      static int cioin_log_count = 0;
-      bool has_input = !input_buffer.empty();
-      if (debug_log && (cioin_log_count < 20 || has_input)) {
-        cioin_log_count++;
-        debug_log("[CIOIN #%d] skip_ret=%d blocking=%d has_input=%d buf_size=%zu\n",
-                cioin_log_count, skip_ret ? 1 : 0, blocking_allowed ? 1 : 0,
-                has_input ? 1 : 0, input_buffer.size());
-      }
-
-      if (!has_input) {
-        // No input available - signal that we need input and pause execution
+      // Read character - behavior depends on dispatch mode and platform
+      if (skip_ret && blocking_allowed) {
+        // Port-based dispatch on CLI - can block until input available
+        while (!emu_console_has_input()) {
+          emu_sleep_ms(1);  // Sleep 1ms to avoid busy-waiting
+        }
+      } else if (!emu_console_has_input()) {
+        // No input available - set waiting flag
+        // For web: caller must check isWaitingForInput() and retry later
         waiting_for_input = true;
         emu_state = HBIOS_NEEDS_INPUT;
-
-        // Rewind PC to retry this HBIOS call when input arrives
-        // The OUT (0xEF), A instruction is 2 bytes, so PC-2 points back to it
-        // When execution resumes after input is provided, the OUT will re-execute
-        uint16_t pc = cpu->regs.PC.get_pair16();
-        cpu->regs.PC.set_pair16(pc - 2);
-
-        return;  // Don't fall through to setResult/doRet
+        if (!skip_ret) {
+          // PC-trapping mode: rewind PC to retry
+          uint16_t pc = cpu->regs.PC.get_pair16();
+          cpu->regs.PC.set_pair16(pc - 2);
+          return;
+        }
+        // Port-based non-blocking: return 0 and let caller handle retry
+        cpu->regs.DE.set_low(0);
+        break;
       }
-
-      // Got input - read from buffer
-      int ch = input_buffer.front();
-      input_buffer.erase(input_buffer.begin());
-      if (debug_log) debug_log("[CIOIN] read char 0x%02X '%c'\n", ch, (ch >= 32 && ch < 127) ? ch : '?');
+      int ch = emu_console_read_char();
       cpu->regs.DE.set_low(ch & 0xFF);
       waiting_for_input = false;
       emu_state = HBIOS_RUNNING;
@@ -840,8 +833,8 @@ void HBIOSDispatch::handleCIO() {
     }
 
     case HBF_CIOIST: {
-      // Input status - return count from input buffer
-      result = input_buffer.empty() ? 0 : 1;
+      // Input status - return count from emu_console
+      result = emu_console_has_input() ? 1 : 0;
       break;
     }
 

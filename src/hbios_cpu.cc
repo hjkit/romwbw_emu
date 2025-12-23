@@ -16,36 +16,12 @@
 qkz80_uint8 hbios_cpu::port_in(qkz80_uint8 port) {
   if (!delegate) return 0xFF;
 
-  HBIOSDispatch* hbios = delegate->getHBIOS();
   banked_mem* memory = delegate->getMemory();
 
   switch (port) {
-    case 0x68: {  // UART data register - read character
-      int ch = hbios->readInputChar();
-      return (ch >= 0) ? (ch & 0xFF) : 0;
-    }
-
-    case 0x6D:  // UART Line Status Register (LSR)
-      // Bit 0: Data Ready, Bit 5: THRE (transmitter empty), Bit 6: TEMT
-      return 0x60 | (hbios->hasInputChar() ? 0x01 : 0x00);
-
-    case 0x69:  // UART IER
-    case 0x6A:  // UART IIR
-    case 0x6B:  // UART LCR
-    case 0x6C:  // UART MCR
-    case 0x6E:  // UART MSR
-    case 0x6F:  // UART SCR
-      return 0x00;  // Safe defaults
-
-    case 0x70:  // RTC latch register
-      return 0xFF;  // No RTC present
-
     case 0x78:  // Bank register (RAM)
     case 0x7C:  // Bank register (ROM)
       return memory ? memory->get_current_bank() : 0xFF;
-
-    case 0xFE:  // Sense switches (front panel)
-      return 0x00;
 
     default:
       return 0xFF;  // Floating bus
@@ -63,25 +39,8 @@ void hbios_cpu::port_out(qkz80_uint8 port, qkz80_uint8 value) {
   banked_mem* memory = delegate->getMemory();
 
   switch (port) {
-    case 0x68:  // UART data register - output character
-      hbios->queueOutputChar(value);
-      break;
-
-    case 0x69:  // UART IER
-    case 0x6A:  // UART FCR
-    case 0x6B:  // UART LCR
-    case 0x6C:  // UART MCR
-    case 0x6F:  // UART SCR
-      // Ignored
-      break;
-
-    case 0x70:  // RTC latch register
-      // Ignored
-      break;
-
     case 0x78:  // RAM bank select
     case 0x7C:  // ROM bank select
-      // Initialize RAM bank if first access
       delegate->initializeRamBankIfNeeded(value);
       if (memory) memory->select_bank(value);
       break;

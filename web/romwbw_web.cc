@@ -137,8 +137,10 @@ extern "C" {
 // Send keyboard input
 EMSCRIPTEN_KEEPALIVE
 void romwbw_key_input(int ch) {
-  if (!emu) return;
-  emu->hbios.queueInputChar(ch);  // Queue to hbios input buffer
+  if (ch == '\n') ch = '\r';  // LF -> CR for CP/M
+  emu_console_queue_char(ch);
+  // Clear waiting flag so run_batch continues
+  if (emu) emu->hbios.clearWaitingForInput();
 }
 
 // Set boot string for auto-boot feature
@@ -146,12 +148,14 @@ void romwbw_key_input(int ch) {
 // A CR is automatically appended to submit the boot command
 EMSCRIPTEN_KEEPALIVE
 void romwbw_set_boot_string(const char* str) {
-  if (!emu || !str) return;
-  // Queue boot string to hbios input buffer
+  if (!str) return;
+  // Queue boot string to emu_console (poll_input will move to hbios)
   for (size_t i = 0; str[i]; i++) {
-    emu->hbios.queueInputChar(str[i] & 0xFF);
+    int ch = str[i] & 0xFF;
+    if (ch == '\n') ch = '\r';
+    emu_console_queue_char(ch);
   }
-  emu->hbios.queueInputChar('\r');  // Add CR to submit
+  emu_console_queue_char('\r');  // Add CR to submit
 }
 
 // Helper: Set up HBIOS ident signatures in RAM common area

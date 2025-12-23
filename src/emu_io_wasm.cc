@@ -123,6 +123,12 @@ void emu_io_init() {
   // Nothing special needed for WebAssembly
 }
 
+void emu_sleep_ms(int ms) {
+  // In WebAssembly, we can't really sleep - just yield
+  // The blocking_allowed flag should be false for web anyway
+  (void)ms;
+}
+
 void emu_io_cleanup() {
   // Close any open aux files
   if (printer_file) { fclose(printer_file); printer_file = nullptr; }
@@ -150,8 +156,7 @@ void emu_console_queue_char(int ch) {
 
 void emu_console_write_char(uint8_t ch) {
   ch &= 0x7F;  // Strip high bit
-  // CP/M sends \r\n, but browsers only need \n
-  // Skip \r to avoid double-spacing issues
+  // Skip CR - browsers only need LF
   if (ch != '\r') {
     js_console_output(ch);
   }
