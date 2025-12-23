@@ -4482,10 +4482,6 @@ int main(int argc, char** argv) {
     // NOW initialize memory disks from HCB (after ROM is loaded)
     emu.init_memory_disks();
 
-    // Enable page zero write tracing for debugging
-    if (debug) {
-      memory.set_trace_page_zero(true);
-    }
   } else {
     // Load into flat 64KB memory
     uint8_t* mem = cpu.get_mem();
@@ -4544,7 +4540,6 @@ int main(int argc, char** argv) {
 
   while (!stop_requested) {
     uint16_t pc = cpu.regs.PC.get_pair16();
-    memory.set_last_pc(pc);  // For debug tracing
     uint8_t opcode = memory.fetch_mem(pc, true) & 0xFF;
 
     // Check for breakpoint hit

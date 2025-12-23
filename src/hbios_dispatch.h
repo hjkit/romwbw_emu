@@ -285,6 +285,11 @@ struct HBRomApp {
 class qkz80;
 class banked_mem;
 
+// Debug log function pointer type - set to enable debug logging
+// When non-null, called with printf-style arguments for debug output
+// Platforms provide their own implementation (emu_log, NSLog wrapper, etc.)
+typedef void (*DebugLogFn)(const char* fmt, ...);
+
 class HBIOSDispatch {
 public:
   HBIOSDispatch();
@@ -297,9 +302,14 @@ public:
   void setCPU(qkz80* cpu) { this->cpu = cpu; }
   void setMemory(banked_mem* mem) { this->memory = mem; }
 
-  // Enable/disable debug output
-  void setDebug(bool enable) { debug = enable; }
-  bool getDebug() const { return debug; }
+  // Debug output - set function pointer to enable, nullptr to disable
+  // Example: hbios.setDebugLog(emu_log);  // use emu_log for debug output
+  void setDebugLog(DebugLogFn fn) { debug_log = fn; }
+  DebugLogFn getDebugLog() const { return debug_log; }
+
+  // Legacy interface - calls setDebugLog with emu_log or nullptr
+  void setDebug(bool enable);
+  bool getDebug() const { return debug_log != nullptr; }
   bool getBootInProgress() const { return boot_in_progress; }
 
   // Disk management
@@ -445,7 +455,7 @@ private:
   // CPU and memory references (not owned)
   qkz80* cpu = nullptr;
   banked_mem* memory = nullptr;
-  bool debug = false;
+  DebugLogFn debug_log = nullptr;  // Debug function pointer (null = disabled)
 
   // State machine
   HBIOSState emu_state = HBIOS_RUNNING;
