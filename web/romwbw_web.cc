@@ -2,18 +2,17 @@
  * RomWBW Emulator - WebAssembly Version
  *
  * Compiles with Emscripten to run RomWBW in browser.
- * Uses shared HBIOSDispatch for HBIOS emulation.
+ * Uses shared hbios_cpu for port I/O and HBIOSDispatch for HBIOS emulation.
  * Console I/O via JavaScript callbacks through emu_io.h abstraction.
  */
 
-#include "qkz80.h"  // From cpmemu via -I flag
-#include "../src/romwbw_mem.h"
-#include "../src/hbios_dispatch.h"
+#include "../src/hbios_cpu.h"  // Shared CPU with port I/O
 #include "../src/emu_io.h"
 #include <emscripten.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cstdarg>
 #include <string>
 #include <vector>
 
@@ -22,220 +21,62 @@
 #define EMU_VERSION "dev"
 #endif
 
-// Use banked_mem as cpm_mem for RomWBW
-using cpm_mem = banked_mem;
-
 // Forward declaration
 struct EmulatorState;
 static EmulatorState* emu = nullptr;
 
 //=============================================================================
-// Extended Z80 for web - handles halt and unimplemented opcodes
+// Emulator State - implements HBIOSCPUDelegate for callbacks
 //=============================================================================
 
-class z80_web : public qkz80 {
-public:
-  z80_web(qkz80_cpu_mem* memory) : qkz80(memory) {}
-
-  void halt(void) override;
-  void unimplemented_opcode(qkz80_uint8 opcode, qkz80_uint16 pc) override;
-};
-
-//=============================================================================
-// Emulator State - all state in one struct for clean reset
-//=============================================================================
-
-struct EmulatorState {
-  cpm_mem memory;
-  z80_web cpu;
+struct EmulatorState : public HBIOSCPUDelegate {
+  banked_mem memory;
+  hbios_cpu cpu;
   HBIOSDispatch hbios;
 
   bool running = false;
   bool debug = false;
-  bool halted = false;  // Set by halt/unimplemented opcode handlers
+  bool halted = false;
 
   // Counters
   long long instruction_count = 0;
   int batch_count = 0;
-  int io_in_count = 0;
-  int io_out_count = 0;
 
-  EmulatorState() : cpu(&memory) {
+  EmulatorState() : cpu(&memory, this) {
     memory.enable_banking();
     hbios.setCPU(&cpu);
     hbios.setMemory(&memory);
     hbios.setBlockingAllowed(false);  // Web/WASM cannot block
   }
+
+  // HBIOSCPUDelegate implementation
+  banked_mem* getMemory() override { return &memory; }
+  HBIOSDispatch* getHBIOS() override { return &hbios; }
+  void initializeRamBankIfNeeded(uint8_t bank) override { (void)bank; }
+  void onHalt() override {
+    emu_log("[HALT] at PC=0x%04X\n", cpu.regs.PC.get_pair16());
+    halted = true;
+    running = false;
+  }
+  void onUnimplementedOpcode(uint8_t opcode, uint16_t pc) override {
+    emu_log("[UNIMPLEMENTED] opcode 0x%02X at PC=0x%04X\n", opcode, pc);
+    halted = true;
+    running = false;
+  }
+  void logDebug(const char* fmt, ...) override {
+    if (!debug) return;
+    char buf[256];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    emu_log("%s", buf);
+  }
 };
-
-// z80_web implementations
-void z80_web::halt(void) {
-  emu_log("[HALT] at PC=0x%04X\n", regs.PC.get_pair16());
-  if (emu) {
-    emu->halted = true;
-    emu->running = false;
-  }
-}
-
-void z80_web::unimplemented_opcode(qkz80_uint8 opcode, qkz80_uint16 pc) {
-  emu_log("[UNIMPLEMENTED] opcode 0x%02X at PC=0x%04X\n", opcode, pc);
-  if (emu) {
-    emu->halted = true;
-    emu->running = false;
-  }
-}
-
-// emu is already declared above as forward declaration
 
 // Ensure emulator exists
 static void ensure_emu() {
   if (!emu) emu = new EmulatorState();
-}
-
-//=============================================================================
-// I/O Port Handling
-//=============================================================================
-
-static uint8_t handle_in(uint8_t port) {
-  uint8_t result = 0xFF;
-
-  switch (port) {
-    case 0x68: {  // UART data register - read character
-      int ch = emu->hbios.readInputChar();
-      result = (ch >= 0) ? (ch & 0xFF) : 0;
-      break;
-    }
-
-    case 0x6D:  // UART Line Status Register (LSR)
-      // Bit 0: Data Ready, Bit 5: THRE (transmitter empty), Bit 6: TEMT
-      result = 0x60 | (emu->hbios.hasInputChar() ? 0x01 : 0x00);
-      break;
-
-    case 0x69:  // UART IER
-    case 0x6A:  // UART IIR
-    case 0x6B:  // UART LCR
-    case 0x6C:  // UART MCR
-    case 0x6E:  // UART MSR
-    case 0x6F:  // UART SCR
-      result = 0x00;  // Safe defaults
-      break;
-
-    case 0x70:  // RTC latch register
-      result = 0xFF;  // No RTC present
-      break;
-
-    case 0x78:  // Bank register (RAM)
-    case 0x7C:  // Bank register (ROM)
-      result = emu->memory.get_current_bank();
-      break;
-
-    case 0xFE:  // Sense switches (front panel)
-      result = 0x00;
-      break;
-
-    default:
-      result = 0xFF;  // Floating bus
-      break;
-  }
-
-  if (emu->debug && emu->io_in_count < 50 && port != 0x6D) {
-    emu_log("[IN] port=0x%02X -> 0x%02X\n", port, result);
-    emu->io_in_count++;
-  }
-
-  return result;
-}
-
-static void handle_out(uint8_t port, uint8_t value) {
-  if (emu->debug && emu->io_out_count < 100) {
-    emu_log("[OUT] port=0x%02X value=0x%02X (%c)\n", port, value,
-            (value >= 32 && value < 127) ? value : '.');
-    emu->io_out_count++;
-  }
-  switch (port) {
-    case 0x68:  // UART data output
-      emu->hbios.queueOutputChar(value);
-      break;
-
-    case 0x69:  // UART IER
-    case 0x6A:  // UART FCR
-    case 0x6B:  // UART LCR
-    case 0x6C:  // UART MCR
-    case 0x6F:  // UART SCR
-      // Ignored
-      break;
-
-    case 0x70:  // RTC latch register
-      // Ignored
-      break;
-
-    case 0x78:  // RAM bank select
-    case 0x7C:  // ROM bank select
-      emu->memory.select_bank(value);
-      break;
-
-    case 0xEC: {
-      // EMU BNKCPY port - inter-bank memory copy
-      // Parameters from memory: 0xFFE4=src_bank, 0xFFE7=dst_bank
-      // Registers: HL=src_addr, DE=dst_addr, BC=length
-      uint16_t src_addr = emu->cpu.regs.HL.get_pair16();
-      uint16_t dst_addr = emu->cpu.regs.DE.get_pair16();
-      uint16_t length = emu->cpu.regs.BC.get_pair16();
-      uint8_t src_bank = emu->memory.fetch_mem(0xFFE4);
-      uint8_t dst_bank = emu->memory.fetch_mem(0xFFE7);
-
-      // Perform inter-bank copy
-      for (uint16_t i = 0; i < length; i++) {
-        uint8_t byte;
-        uint16_t s_addr = src_addr + i;
-        uint16_t d_addr = dst_addr + i;
-
-        // Read from source
-        if (s_addr >= 0x8000) {
-          byte = emu->memory.fetch_mem(s_addr);
-        } else {
-          byte = emu->memory.read_bank(src_bank, s_addr);
-        }
-
-        // Write to dest
-        if (d_addr >= 0x8000) {
-          emu->memory.store_mem(d_addr, byte);
-        } else {
-          emu->memory.write_bank(dst_bank, d_addr, byte);
-        }
-      }
-      break;
-    }
-
-    case 0xED: {
-      // EMU BNKCALL port - bank call
-      // On entry: A (value) = target bank, IX = call address
-      uint16_t call_addr = emu->cpu.regs.IX.get_pair16();
-
-      // Handle known vectors via HBIOSDispatch
-      if (call_addr == 0x0406) {
-        // PRTSUM - Print device summary
-        emu->hbios.handlePRTSUM();
-      }
-      // Other vectors handled by Z80 proxy code
-      break;
-    }
-
-    case 0xEE:  // EMU signal port
-      emu->hbios.handleSignalPort(value);
-      break;
-
-    case 0xEF:  // HBIOS dispatch trigger port
-      // Set skip_ret since Z80 proxy has its own RET
-      emu->hbios.setSkipRet(true);
-      emu->hbios.handlePortDispatch();
-      emu->hbios.setSkipRet(false);
-      break;
-
-    default:
-      // Unknown port - ignore
-      break;
-  }
 }
 
 //=============================================================================
@@ -256,7 +97,6 @@ static void run_batch() {
   if (!emu->running || emu->hbios.isWaitingForInput()) return;
 
   emu->batch_count++;
-  // Log first few batches and then every 100th batch (only in debug mode)
   if (emu->debug && (emu->batch_count <= 5 || emu->batch_count % 100 == 0)) {
     emu_log("[BATCH] #%d starting, PC=0x%04X, instr=%lld\n",
             emu->batch_count, emu->cpu.regs.PC.get_pair16(), emu->instruction_count);
@@ -264,7 +104,6 @@ static void run_batch() {
 
   for (int i = 0; i < 50000 && emu->running && !emu->hbios.isWaitingForInput(); i++) {
     uint16_t pc = emu->cpu.regs.PC.get_pair16();
-    uint8_t opcode = emu->memory.fetch_mem(pc) & 0xFF;
 
     // Check for HBIOS trap
     if (emu->hbios.checkTrap(pc)) {
@@ -276,34 +115,7 @@ static void run_batch() {
       continue;
     }
 
-    // Handle HLT
-    if (opcode == 0x76) {
-      emu_status("HLT instruction - emulation stopped");
-      emu->running = false;
-      break;
-    }
-
-    // Handle IN instruction (0xDB)
-    if (opcode == 0xDB) {
-      uint8_t port = emu->memory.fetch_mem(pc + 1) & 0xFF;
-      uint8_t value = handle_in(port);
-      emu->cpu.set_reg8(value, qkz80::reg_A);
-      emu->cpu.regs.PC.set_pair16(pc + 2);
-      emu->instruction_count++;
-      continue;
-    }
-
-    // Handle OUT instruction (0xD3)
-    if (opcode == 0xD3) {
-      uint8_t port = emu->memory.fetch_mem(pc + 1) & 0xFF;
-      uint8_t value = emu->cpu.get_reg8(qkz80::reg_A);
-      handle_out(port, value);
-      emu->cpu.regs.PC.set_pair16(pc + 2);
-      emu->instruction_count++;
-      continue;
-    }
-
-    // Execute normal instruction
+    // Execute instruction - port I/O handled by hbios_cpu::port_in/port_out
     emu->cpu.execute();
     emu->instruction_count++;
   }
@@ -325,9 +137,8 @@ extern "C" {
 // Send keyboard input
 EMSCRIPTEN_KEEPALIVE
 void romwbw_key_input(int ch) {
-  if (ch == '\n') ch = '\r';  // LF -> CR for CP/M
-  emu_console_queue_char(ch);
-  if (emu) emu->hbios.clearWaitingForInput();
+  if (!emu) return;
+  emu->hbios.queueInputChar(ch);  // Queue to hbios input buffer
 }
 
 // Set boot string for auto-boot feature
@@ -335,13 +146,12 @@ void romwbw_key_input(int ch) {
 // A CR is automatically appended to submit the boot command
 EMSCRIPTEN_KEEPALIVE
 void romwbw_set_boot_string(const char* str) {
-  if (str) {
-    // Queue boot string to console input
-    for (size_t i = 0; str[i]; i++) {
-      emu_console_queue_char(str[i] & 0xFF);
-    }
-    emu_console_queue_char('\r');  // Add CR to submit
+  if (!emu || !str) return;
+  // Queue boot string to hbios input buffer
+  for (size_t i = 0; str[i]; i++) {
+    emu->hbios.queueInputChar(str[i] & 0xFF);
   }
+  emu->hbios.queueInputChar('\r');  // Add CR to submit
 }
 
 // Helper: Set up HBIOS ident signatures in RAM common area
@@ -480,8 +290,6 @@ void romwbw_start() {
   // Reset counters
   emu->instruction_count = 0;
   emu->batch_count = 0;
-  emu->io_in_count = 0;
-  emu->io_out_count = 0;
 
   emu->running = true;
   emu->hbios.clearWaitingForInput();

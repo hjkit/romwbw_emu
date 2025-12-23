@@ -16,6 +16,15 @@
 #include <ctime>
 #include <queue>
 #include <random>
+#include <strings.h>
+
+//=============================================================================
+// String Utilities
+//=============================================================================
+
+int emu_strncasecmp(const char* s1, const char* s2, size_t n) {
+  return strncasecmp(s1, s2, n);
+}
 
 //=============================================================================
 // JavaScript Callbacks
