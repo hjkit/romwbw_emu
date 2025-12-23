@@ -13,6 +13,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdarg>
 
 // Optional debug log file - defined in hbios_core.cc for iOS, nullptr for CLI
 // Using weak linkage to allow optional definition
