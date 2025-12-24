@@ -383,6 +383,7 @@ int romwbw_get_pc() {
 // Set debug mode
 EMSCRIPTEN_KEEPALIVE
 void romwbw_set_debug(int enable) {
+  emu_set_debug(enable != 0);  // Control emu_log() output
   if (emu) {
     emu->debug = (enable != 0);
     emu->memory.set_debug(emu->debug);

@@ -96,6 +96,9 @@ EM_JS(void, js_video_write_char, (int ch), {
 // Internal State
 //=============================================================================
 
+// Debug logging enabled flag (volatile to prevent optimizer from removing checks)
+static volatile bool emu_debug_enabled = false;
+
 // Input queue for async keyboard input
 static std::queue<int> input_queue;
 
@@ -253,7 +256,12 @@ void emu_aux_out(uint8_t ch) {
 // Debug/Log Output Implementation
 //=============================================================================
 
+void emu_set_debug(bool enable) {
+  emu_debug_enabled = enable;
+}
+
 void emu_log(const char* fmt, ...) {
+  if (!emu_debug_enabled) return;  // Only log when debug enabled
   char buf[1024];
   va_list args;
   va_start(args, fmt);

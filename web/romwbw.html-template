@@ -167,7 +167,15 @@
 
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
-  <script src="romwbw.js"></script>
+  <script>
+    // Must define Module.onLog BEFORE romwbw.js loads to suppress debug output
+    var Module = Module || {};
+    var emuDebugEnabled = false;
+    Module.onLog = function(msg) {
+      if (emuDebugEnabled) console.log(msg);
+    };
+  </script>
+  <script src="romwbw.js?v=@VERSION@"></script>
   <script>
     const EMU_VERSION = '@VERSION@';
 
@@ -566,6 +574,7 @@
 
     // Debug checkbox
     debugCheckbox.addEventListener('change', function() {
+      emuDebugEnabled = debugCheckbox.checked;  // Control console.log output
       if (Module._romwbw_set_debug) {
         Module._romwbw_set_debug(debugCheckbox.checked ? 1 : 0);
       }
